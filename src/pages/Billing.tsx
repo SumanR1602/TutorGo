@@ -1,11 +1,16 @@
 import { useState, useMemo } from 'react'
-import { Plus, Download, ChevronDown, ChevronUp, FileText, FileSpreadsheet, Calendar, Receipt } from 'lucide-react'
+import {
+  Plus, Download, ChevronDown, ChevronUp, FileText, FileSpreadsheet,
+  Calendar, Receipt, PauseCircle, AlertTriangle,
+} from 'lucide-react'
 import Header from '@components/shared/Header'
 import Modal from '@components/shared/Modal'
 import PaymentEntry from '@components/billing/PaymentEntry'
 import StudentAvatar from '@components/shared/StudentAvatar'
 import useAppStore from '@store/useStore'
-import { formatCurrency, getMonthlyBreakdown } from '@utils/billing'
+import { formatCurrency } from '@utils/billing'
+import { getStudentLedger } from '@utils/billingCore'
+import { todayISO, formatDayMonth } from '@utils/date'
 import { exportToExcel, exportAllStudentsSummaryExcel } from '@utils/billingExcel'
 import { openInvoicePDF } from '@utils/billingInvoice'
 import { openReceiptPDF } from '@utils/billingReceipt'
@@ -15,20 +20,26 @@ interface InvModal { student: Student; dateFrom: string; dateTo: string }
 interface RcptModal { student: Student }
 
 export default function Billing() {
-  const students    = useAppStore((s) => s.students)
-  const sessions    = useAppStore((s) => s.sessions)
-  const payments    = useAppStore((s) => s.payments)
-  const settings    = useAppStore((s) => s.settings)
-  const getTotalDue = useAppStore((s) => s.getTotalDue)
-  const getTotalPaid= useAppStore((s) => s.getTotalPaid)
-  const getBalance  = useAppStore((s) => s.getBalance)
+  const students = useAppStore((s) => s.students)
+  const sessions = useAppStore((s) => s.sessions)
+  const payments = useAppStore((s) => s.payments)
+  const breaks   = useAppStore((s) => s.breaks)
+  const settings = useAppStore((s) => s.settings)
 
-  const [showPayment,     setShowPayment]     = useState(false)
-  const [expandedMonths,  setExpandedMonths]  = useState<Record<string, boolean>>({})
-  const [invModal,        setInvModal]        = useState<InvModal | null>(null)
-  const [rcptModal,       setRcptModal]       = useState<RcptModal | null>(null)
+  const [showPayment,    setShowPayment]    = useState(false)
+  const [expandedCycles, setExpandedCycles] = useState<Record<string, boolean>>({})
+  const [invModal,       setInvModal]       = useState<InvModal | null>(null)
+  const [rcptModal,      setRcptModal]      = useState<RcptModal | null>(null)
 
-  const today = new Date().toISOString().slice(0, 10)
+  const today = todayISO()
+
+  /** One ledger per student, recomputed only when the underlying data moves. */
+  const ledgers = useMemo(
+    () => new Map(
+      students.map((s) => [s.id, getStudentLedger(s, sessions, payments, breaks, today)]),
+    ),
+    [students, sessions, payments, breaks, today],
+  )
 
   const invSessionCount = useMemo(() => {
     if (!invModal) return 0
@@ -41,36 +52,31 @@ export default function Billing() {
     ).length
   }, [invModal, sessions])
 
-  function toggleMonths(studentId: string) {
-    setExpandedMonths((prev) => ({ ...prev, [studentId]: !prev[studentId] }))
+  function toggleCycles(studentId: string) {
+    setExpandedCycles((prev) => ({ ...prev, [studentId]: !prev[studentId] }))
   }
 
   async function handleExportExcel(student: Student) {
     const ss = sessions.filter((s) => s.studentId === student.id)
     const ps = payments.filter((p) => p.studentId === student.id)
-    await exportToExcel(student, ss, ps)
+    await exportToExcel(student, ss, ps, breaks)
   }
 
   function generateInvoice() {
     if (!invModal) return
     const { student, dateFrom, dateTo } = invModal
-    const ss = sessions.filter((s) => s.studentId === student.id)
-    const ps = payments.filter((p) => p.studentId === student.id)
-    openInvoicePDF(student, ss, ps, settings.teacherName, dateFrom, dateTo)
+    openInvoicePDF(student, sessions, payments, settings.teacherName, dateFrom, dateTo, breaks)
     setInvModal(null)
   }
 
   function generateReceipt(payment: Payment) {
     if (!rcptModal) return
-    const { student } = rcptModal
-    const ss = sessions.filter((s) => s.studentId === student.id)
-    const ps = payments.filter((p) => p.studentId === student.id)
-    openReceiptPDF(student, ss, ps, payment, settings.teacherName)
+    openReceiptPDF(rcptModal.student, sessions, payments, payment, settings.teacherName, breaks)
     setRcptModal(null)
   }
 
   async function handleSummaryExcel() {
-    await exportAllStudentsSummaryExcel(students, sessions, payments)
+    await exportAllStudentsSummaryExcel(students, sessions, payments, breaks)
   }
 
   return (
@@ -103,35 +109,29 @@ export default function Billing() {
           </div>
         ) : (
           students.map((student) => {
-            const due     = getTotalDue(student.id)
-            const paid    = getTotalPaid(student.id)
-            const balance = getBalance(student.id)
-            const studentSessions = sessions.filter((s) => s.studentId === student.id)
-            const studentPayments  = payments.filter((p) => p.studentId === student.id)
-            const monthly = getMonthlyBreakdown(studentSessions, studentPayments, student.ratePerHour, student.rateType ?? 'hourly')
+            const ledger   = ledgers.get(student.id)!
+            const currency = student.currency
+            const cycles   = ledger.cycles.slice().reverse()   // newest first
+            const isMonthly = (student.rateType ?? 'hourly') === 'monthly'
+            const expanded = expandedCycles[student.id]
 
             return (
               <div key={student.id} className="card space-y-3">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2.5">
                     <StudentAvatar name={student.name} color={student.color ?? '#6366f1'} size="sm" />
-                    <span className="font-semibold text-gray-900 text-sm">{student.name}</span>
+                    <div>
+                      <span className="font-semibold text-gray-900 text-sm">{student.name}</span>
+                      {student.endDate && (
+                        <span className="ml-1.5 text-[10px] text-gray-400">
+                          left {formatDayMonth(student.endDate)}
+                        </span>
+                      )}
+                    </div>
                   </div>
                   <div className="flex items-center gap-2">
                     <button
-                      onClick={() => {
-                        const studentPayments = payments
-                          .filter((p) => p.studentId === student.id)
-                          .sort((a, b) => b.date.localeCompare(a.date))
-                        const last = studentPayments[0]
-                        let prefillFrom = ''
-                        if (last) {
-                          const d = new Date(last.date + 'T00:00:00')
-                          d.setDate(d.getDate() + 1)
-                          prefillFrom = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`
-                        }
-                        setInvModal({ student, dateFrom: prefillFrom, dateTo: today })
-                      }}
+                      onClick={() => setInvModal({ student, dateFrom: '', dateTo: '' })}
                       className="flex items-center gap-1 text-xs text-gray-400 hover:text-purple-600 transition-colors"
                       title="Open printable invoice (PDF)"
                     >
@@ -156,50 +156,110 @@ export default function Billing() {
                   </div>
                 </div>
 
+                {/* Totals */}
                 <div className="grid grid-cols-3 gap-2">
                   <div className="bg-gray-50 rounded-xl p-2.5 text-center">
-                    <p className="text-[10px] text-gray-400">Total due</p>
-                    <p className="text-xs font-semibold text-gray-800">{formatCurrency(due, student.currency)}</p>
-                    <p className="text-[9px] text-gray-300 mt-0.5">all time</p>
+                    <p className="text-[10px] text-gray-400">Billed</p>
+                    <p className="text-xs font-semibold text-gray-800">
+                      {formatCurrency(ledger.totalDue, currency)}
+                    </p>
+                    <p className="text-[9px] text-gray-300 mt-0.5">
+                      {ledger.cycles.length} {isMonthly ? 'cycle' : 'month'}{ledger.cycles.length !== 1 ? 's' : ''}
+                    </p>
                   </div>
                   <div className="bg-green-50 rounded-xl p-2.5 text-center">
                     <p className="text-[10px] text-gray-400">Received</p>
-                    <p className="text-xs font-semibold text-green-700">{formatCurrency(paid, student.currency)}</p>
-                    <p className="text-[9px] text-gray-300 mt-0.5">all time</p>
-                  </div>
-                  <div className={`rounded-xl p-2.5 text-center ${balance > 0 ? 'bg-red-50' : 'bg-green-50'}`}>
-                    <p className="text-[10px] text-gray-400">Pending</p>
-                    <p className={`text-xs font-semibold ${balance > 0 ? 'text-red-600' : 'text-green-600'}`}>
-                      {formatCurrency(balance, student.currency)}
+                    <p className="text-xs font-semibold text-green-700">
+                      {formatCurrency(ledger.totalPaid, currency)}
                     </p>
                     <p className="text-[9px] text-gray-300 mt-0.5">all time</p>
                   </div>
+                  {ledger.balance > 0 ? (
+                    <div className="rounded-xl p-2.5 text-center bg-red-50">
+                      <p className="text-[10px] text-gray-400">Pending</p>
+                      <p className="text-xs font-semibold text-red-600">
+                        {formatCurrency(ledger.balance, currency)}
+                      </p>
+                      <p className="text-[9px] text-gray-300 mt-0.5">due now</p>
+                    </div>
+                  ) : ledger.credit > 0 ? (
+                    <div className="rounded-xl p-2.5 text-center bg-indigo-50">
+                      <p className="text-[10px] text-gray-400">Credit</p>
+                      <p className="text-xs font-semibold text-indigo-600">
+                        {formatCurrency(ledger.credit, currency)}
+                      </p>
+                      <p className="text-[9px] text-gray-300 mt-0.5">paid ahead</p>
+                    </div>
+                  ) : (
+                    <div className="rounded-xl p-2.5 text-center bg-green-50">
+                      <p className="text-[10px] text-gray-400">Pending</p>
+                      <p className="text-xs font-semibold text-green-600">
+                        {formatCurrency(0, currency)}
+                      </p>
+                      <p className="text-[9px] text-gray-300 mt-0.5">settled</p>
+                    </div>
+                  )}
                 </div>
 
-                {monthly.length > 0 && (
+                {/* Sessions that fall in no cycle contribute nothing — surface them */}
+                {ledger.unbilled.length > 0 && (
+                  <div className="flex items-start gap-2 rounded-xl border border-amber-300 bg-amber-50 px-3 py-2">
+                    <AlertTriangle size={14} className="text-amber-500 shrink-0 mt-0.5" />
+                    <p className="text-[11px] text-amber-800 leading-snug">
+                      {ledger.unbilled.length} session{ledger.unbilled.length !== 1 ? 's' : ''} outside
+                      the billing period ({ledger.unbilled.map((s) => formatDayMonth(s.date)).join(', ')})
+                      {' '}— not charged. Move the billing start date back under Students, or delete them.
+                    </p>
+                  </div>
+                )}
+
+                {/* Cycles */}
+                {cycles.length > 0 && (
                   <div>
-                    <p className="text-[10px] text-gray-400 font-medium mb-2">Monthly</p>
+                    <p className="text-[10px] text-gray-400 font-medium mb-2">
+                      {isMonthly ? 'Billing cycles' : 'Monthly'}
+                    </p>
                     <div className="space-y-1.5">
-                      {(expandedMonths[student.id] ? monthly : monthly.slice(0, 3)).map((m) => (
-                        <div key={m.key} className="flex items-center justify-between text-xs">
-                          <span className="text-gray-600">{m.month}</span>
-                          <div className="flex items-center gap-3">
-                            <span className="text-gray-400">{m.hours}h</span>
-                            <span className={m.balance > 0 ? 'text-red-500' : 'text-green-600'}>
-                              {m.balance > 0 ? `-${formatCurrency(m.balance, student.currency)}` : 'Paid'}
-                            </span>
+                      {(expanded ? cycles : cycles.slice(0, 3)).map((c) => (
+                        <div key={c.key} className="flex items-start justify-between text-xs gap-2">
+                          <div className="min-w-0">
+                            <span className="text-gray-600">{c.label}</span>
+                            {c.breakDays > 0 && (
+                              <span className="ml-1.5 inline-flex items-center gap-0.5 text-[10px] text-amber-600">
+                                <PauseCircle size={9} />
+                                +{c.breakDays}d
+                              </span>
+                            )}
+                            {c.proRated && (
+                              <span className="ml-1.5 text-[10px] text-gray-400">pro-rated</span>
+                            )}
+                            {c.extraAmount > 0 && (
+                              <span className="ml-1.5 text-[10px] text-amber-600">
+                                +{formatCurrency(c.extraAmount, currency)} extra
+                              </span>
+                            )}
+                          </div>
+                          <div className="flex items-center gap-3 shrink-0">
+                            <span className="text-gray-400">{c.hours}h</span>
+                            {c.balance > 0 ? (
+                              <span className="text-red-500 font-medium">
+                                {formatCurrency(c.balance, currency)} due
+                              </span>
+                            ) : (
+                              <span className="text-green-600">Paid</span>
+                            )}
                           </div>
                         </div>
                       ))}
                     </div>
-                    {monthly.length > 3 && (
+                    {cycles.length > 3 && (
                       <button
-                        onClick={() => toggleMonths(student.id)}
+                        onClick={() => toggleCycles(student.id)}
                         className="mt-2 flex items-center gap-1 text-[11px] text-indigo-600 font-medium"
                       >
-                        {expandedMonths[student.id]
+                        {expanded
                           ? <><ChevronUp size={12} /> Show less</>
-                          : <><ChevronDown size={12} /> Show all {monthly.length} months</>}
+                          : <><ChevronDown size={12} /> Show all {cycles.length} {isMonthly ? 'cycles' : 'months'}</>}
                       </button>
                     )}
                   </div>
@@ -248,7 +308,7 @@ export default function Billing() {
                         <p className="text-sm font-semibold text-gray-800 group-hover:text-green-700">
                           {formatCurrency(p.amount, rcptModal.student.currency)}
                         </p>
-                        <p className="text-xs text-gray-400 mt-0.5">{p.date}</p>
+                        <p className="text-xs text-gray-400 mt-0.5">{formatDayMonth(p.date)}</p>
                         {p.note && <p className="text-xs text-gray-400 italic mt-0.5">{p.note}</p>}
                       </div>
                       <Receipt size={15} className="text-gray-300 group-hover:text-green-500 shrink-0" />
@@ -273,7 +333,8 @@ export default function Billing() {
         {invModal && (
           <div className="space-y-4">
             <p className="text-xs text-gray-500">
-              Choose a date range to include in the invoice. Leave both blank to include all sessions.
+              Leave both dates blank to invoice everything still outstanding. Set a range to
+              invoice the cycles it covers instead.
             </p>
             <div className="grid grid-cols-2 gap-3">
               <div>
@@ -299,12 +360,20 @@ export default function Billing() {
             </div>
 
             <div className={`flex items-center gap-2 text-sm rounded-xl px-3 py-2.5 ${
-              invSessionCount > 0 ? 'bg-indigo-50 text-indigo-700' : 'bg-gray-50 text-gray-400'
+              invModal.dateFrom || invModal.dateTo
+                ? 'bg-indigo-50 text-indigo-700'
+                : 'bg-gray-50 text-gray-500'
             }`}>
               <Calendar size={14} />
               {invModal.dateFrom || invModal.dateTo
                 ? `${invSessionCount} session${invSessionCount !== 1 ? 's' : ''} in selected range`
-                : `${sessions.filter((s) => s.studentId === invModal.student.id).length} sessions total (all time)`
+                : (() => {
+                    const l = ledgers.get(invModal.student.id)
+                    const owing = l?.cycles.filter((c) => c.balance > 0).length ?? 0
+                    return owing > 0
+                      ? `${owing} unpaid cycle${owing !== 1 ? 's' : ''} · ${formatCurrency(l!.balance, invModal.student.currency)} due`
+                      : 'Nothing outstanding — invoice will be empty'
+                  })()
               }
             </div>
 

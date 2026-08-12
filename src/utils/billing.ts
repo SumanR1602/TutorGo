@@ -1,87 +1,64 @@
 /**
  * billing.ts
- * Core billing calculations and formatting helpers.
+ * Formatting helpers and the legacy month-breakdown adapter.
  *
+ * Calculations  → billingCore.ts   (the single source of truth)
  * Excel exports → billingExcel.ts
  * PDF invoice   → billingInvoice.ts
  * PDF receipt   → billingReceipt.ts
  */
 
-import type { Session, Payment, MonthlyBreakdown } from '@/types'
+import type { Student, Session, Payment, Break, MonthlyBreakdown } from '@/types'
+import { getStudentLedger } from './billingCore'
 import { DEFAULT_CURRENCY } from '@constants'
 
-/**
- * Format a YYYY-MM-DD string to DD/MM/YYYY.
- * e.g. "2026-05-24" → "24/05/2026"
- */
-export function formatDate(dateStr: string): string {
-  if (!dateStr) return ''
-  const [y, m, d] = dateStr.split('-')
-  return `${d}/${m}/${y}`
-}
+export { formatDate } from './date'
 
 /**
- * Build a monthly breakdown for a student.
- * Returns array of { key, month, hours, amount, paid, balance }
+ * Per-cycle breakdown for a student, newest first.
+ *
+ * Replaces the old calendar-month grouping: rows are now real billing cycles,
+ * so a monthly student's row reads "15 Jul → 25 Aug 2026" rather than "July".
  */
-export function getMonthlyBreakdown(
+export function getBillingBreakdown(
+  student: Student,
   sessions: Session[],
   payments: Payment[],
-  ratePerHour: number,
-  rateType: 'hourly' | 'monthly' = 'hourly',
+  breaks: Break[] = [],
 ): MonthlyBreakdown[] {
-  const monthMap: Record<string, { hours: number; paid: number }> = {}
-
-  sessions.forEach(({ date, hours }) => {
-    const key = date.slice(0, 7)
-    if (!monthMap[key]) monthMap[key] = { hours: 0, paid: 0 }
-    monthMap[key].hours += hours
-  })
-
-  payments.forEach(({ date, amount }) => {
-    const key = date.slice(0, 7)
-    if (!monthMap[key]) monthMap[key] = { hours: 0, paid: 0 }
-    monthMap[key].paid += amount
-  })
-
-  return Object.entries(monthMap)
-    .sort(([a], [b]) => b.localeCompare(a))
-    .map(([key, { hours, paid }]) => {
-      const [year, month] = key.split('-')
-      const monthLabel = new Date(+year, +month - 1, 1).toLocaleString('en-IN', {
-        month: 'long',
-        year: 'numeric',
-      })
-      const amount =
-        rateType === 'monthly'
-          ? parseFloat(ratePerHour.toFixed(2))
-          : parseFloat((hours * ratePerHour).toFixed(2))
-      return {
-        key,
-        month: monthLabel,
-        hours: parseFloat(hours.toFixed(1)),
-        amount,
-        paid: parseFloat(paid.toFixed(2)),
-        balance: parseFloat((amount - paid).toFixed(2)),
-      }
-    })
+  return getStudentLedger(student, sessions, payments, breaks)
+    .cycles
+    .slice()
+    .reverse()
+    .map((c) => ({
+      key: c.key,
+      month: c.label,
+      hours: c.hours,
+      amount: c.amount,
+      paid: c.paid,
+      balance: c.balance,
+    }))
 }
 
 /**
  * Format a number as currency.
- * e.g. formatCurrency(5000, 'INR') → "₹5,000"
+ * Paise are shown only when they exist, so ₹5,000 stays ₹5,000 while a
+ * pro-rated ₹1,612.90 is no longer silently rounded to ₹1,613.
  */
 export function formatCurrency(amount: number, currency: string = DEFAULT_CURRENCY): string {
+  const value = Number.isFinite(amount) ? amount : 0
+  const hasPaise = Math.abs(value % 1) > 0.004
   return new Intl.NumberFormat('en-IN', {
     style: 'currency',
-    currency,
-    maximumFractionDigits: 0,
-  }).format(amount)
+    currency: currency || DEFAULT_CURRENCY,
+    minimumFractionDigits: hasPaise ? 2 : 0,
+    maximumFractionDigits: hasPaise ? 2 : 0,
+  }).format(value)
 }
 
 /**
- * Generate PDF via the /api/pdf serverless function (Puppeteer on Vercel).
- * Always opens a preview tab. The "Save as PDF" button inside the tab handles the download.
+ * Open a printable HTML document in a new tab.
+ * The "Save as PDF" button inside the tab handles the download.
  */
 export function openPDFWindow(html: string, _filename: string): void {
   const w = window.open('', '_blank')

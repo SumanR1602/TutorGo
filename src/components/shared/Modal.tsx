@@ -1,5 +1,5 @@
 import { X } from 'lucide-react'
-import { type ReactNode, useEffect, useRef } from 'react'
+import { type ReactNode, useEffect, useRef, useId } from 'react'
 
 interface ModalProps {
   isOpen: boolean
@@ -10,6 +10,9 @@ interface ModalProps {
 
 export default function Modal({ isOpen, onClose, title, children }: ModalProps) {
   const panelRef = useRef<HTMLDivElement>(null)
+  // Nested modals are common here (a card opens a modal that opens another),
+  // so the heading id must be unique or aria-labelledby points at the wrong one.
+  const titleId = useId()
 
   useEffect(() => {
     if (!isOpen) return
@@ -23,7 +26,15 @@ export default function Modal({ isOpen, onClose, title, children }: ModalProps) 
       'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
     )
     firstFocusable?.focus()
-    return () => document.removeEventListener('keydown', onKey)
+
+    // Stop the page behind the sheet from scrolling with it.
+    const previousOverflow = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+
+    return () => {
+      document.removeEventListener('keydown', onKey)
+      document.body.style.overflow = previousOverflow
+    }
   }, [isOpen, onClose])
 
   if (!isOpen) return null
@@ -37,10 +48,10 @@ export default function Modal({ isOpen, onClose, title, children }: ModalProps) 
         style={{ maxHeight: 'calc(92dvh - 64px)', overflowY: 'auto' }}
         role="dialog"
         aria-modal="true"
-        aria-labelledby="modal-title"
+        aria-labelledby={titleId}
       >
         <div className="flex items-center justify-between mb-5">
-          <h2 id="modal-title" className="text-base font-semibold text-gray-900">{title}</h2>
+          <h2 id={titleId} className="text-base font-semibold text-gray-900">{title}</h2>
           <button
             onClick={onClose}
             aria-label="Close modal"

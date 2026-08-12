@@ -1,14 +1,12 @@
 import { useState, useEffect } from 'react'
 import { Clock, RotateCcw } from 'lucide-react'
 import useAppStore from '@store/useStore'
-import { convertISTtoTZ, getCurrentTimeInTZ, isReasonableHour } from '@utils/timezone'
+import { convertISTtoTZ, getCurrentTimeInTZ, isReasonableHour, nowInTeacherTZ } from '@utils/timezone'
 import { TEACHER_TIMEZONE } from '@constants'
 import TimePicker12h from '../shared/TimePicker12h'
 
-function getNowIST(): string {
-  const now = new Date()
-  return `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`
-}
+/** Now in IST — reading the device clock instead would be wrong abroad. */
+const getNowIST = () => nowInTeacherTZ(TEACHER_TIMEZONE)
 
 export default function TimezoneConverter() {
   const students = useAppStore((s) => s.students)

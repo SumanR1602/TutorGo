@@ -2,7 +2,9 @@ import { useState, useMemo } from 'react'
 import { ChevronLeft, ChevronRight } from 'lucide-react'
 import useAppStore from '@store/useStore'
 import { formatCurrency } from '@utils/billing'
-import { formatMonthShort } from '@utils/date'
+import { getBillingCycles, earningsForMonthFromCycles } from '@utils/billingCore'
+import { formatMonthShort, todayISO, currentYM as todayYM, addMonthsClamped } from '@utils/date'
+import { DEFAULT_CURRENCY } from '@constants'
 import type { Session, Student } from '@/types'
 
 interface WindowOption {
@@ -29,7 +31,7 @@ function allSessionMonths(sessions: Session[]): string[] {
 }
 
 function currentYM(): string {
-  return new Date().toISOString().slice(0, 7)
+  return todayYM()
 }
 
 const WINDOWS: WindowOption[] = [
@@ -51,6 +53,11 @@ function findLastIndexLE(arr: string[], cur: string): number {
 export default function StatsChart() {
   const students = useAppStore((s) => s.students)
   const sessions = useAppStore((s) => s.sessions)
+  const breaks   = useAppStore((s) => s.breaks)
+
+  // Only label the currency when every student shares one.
+  const currencies = new Set(students.map((s) => s.currency ?? DEFAULT_CURRENCY))
+  const currency   = currencies.size === 1 ? [...currencies][0] : DEFAULT_CURRENCY
 
   const [mode,        setMode]        = useState<Mode>('hours')
   const [winLabel,    setWinLabel]    = useState('6M')
@@ -76,11 +83,10 @@ export default function StatsChart() {
     const windowEnd   = endIdx - offset * win.size
     const windowStart = windowEnd - win.size + 1
     if (windowStart < 0) {
+      const anchor = `${allMonths[Math.max(0, windowEnd)]}-01`
       const padded: string[] = []
       for (let i = win.size - 1; i >= 0; i--) {
-        const d = new Date(allMonths[Math.max(0, windowEnd)] + '-01')
-        d.setMonth(d.getMonth() - i)
-        padded.push(d.toISOString().slice(0, 7))
+        padded.push(addMonthsClamped(anchor, -i).slice(0, 7))
       }
       return padded
     }
@@ -95,12 +101,16 @@ export default function StatsChart() {
     const cur = currentYM()
     return WINDOWS.filter((w) => {
       if (w.size === null) return true
-      const cutoff = new Date(cur + '-01')
-      cutoff.setMonth(cutoff.getMonth() - w.size)
-      const cutoffYM = cutoff.toISOString().slice(0, 7)
+      const cutoffYM = addMonthsClamped(`${cur}-01`, -w.size).slice(0, 7)
       return sessions.some((s) => s.date >= cutoffYM)
     })
   }, [sessions])
+
+  /** Build each student's cycles once, not once per visible month. */
+  const cyclesByStudent = useMemo(() => {
+    const today = todayISO()
+    return new Map(students.map((s) => [s.id, getBillingCycles(s, sessions, breaks, today)]))
+  }, [students, sessions, breaks])
 
   const data = useMemo<MonthData[]>(() => {
     return visibleMonths.map((month) => {
@@ -110,11 +120,11 @@ export default function StatsChart() {
       const perStudent = students
         .map((student: Student) => {
           const studentSessions = monthSessions.filter((s) => s.studentId === student.id)
-          if (!studentSessions.length) return null
-          const hours    = parseFloat(studentSessions.reduce((sum, s) => sum + s.hours, 0).toFixed(1))
-          const earnings = (student.rateType ?? 'hourly') === 'monthly'
-            ? (student.ratePerHour ?? 0)
-            : hours * (student.ratePerHour ?? 0)
+          // A monthly cycle is recognised in the month it starts, which can be
+          // a month with no sessions of its own — so check earnings too.
+          const earnings = earningsForMonthFromCycles(cyclesByStudent.get(student.id) ?? [], month)
+          if (!studentSessions.length && earnings === 0) return null
+          const hours = parseFloat(studentSessions.reduce((sum, s) => sum + s.hours, 0).toFixed(1))
           totalHours    += hours
           totalEarnings += earnings
           return { id: student.id, name: student.name, color: student.color ?? '#6366f1', hours, earnings }
@@ -128,7 +138,7 @@ export default function StatsChart() {
         perStudent,
       }
     })
-  }, [visibleMonths, sessions, students])
+  }, [visibleMonths, sessions, students, cyclesByStudent])
 
   const maxVal = useMemo(
     () => Math.max(...data.map((d) => (mode === 'hours' ? d.totalHours : d.totalEarnings)), 1),
@@ -136,8 +146,8 @@ export default function StatsChart() {
   )
 
   const getVal      = (d: MonthData) => mode === 'hours' ? d.totalHours : d.totalEarnings
-  const fmtVal      = (d: MonthData) => mode === 'hours' ? `${d.totalHours}h` : formatCurrency(d.totalEarnings)
-  const fmtStudentV = (s: MonthData['perStudent'][number]) => mode === 'hours' ? `${s.hours}h` : formatCurrency(s.earnings)
+  const fmtVal      = (d: MonthData) => mode === 'hours' ? `${d.totalHours}h` : formatCurrency(d.totalEarnings, currency)
+  const fmtStudentV = (s: MonthData['perStudent'][number]) => mode === 'hours' ? `${s.hours}h` : formatCurrency(s.earnings, currency)
   const getStudentV = (s: MonthData['perStudent'][number]) => mode === 'hours' ? s.hours : s.earnings
 
   if (!sessions.length) return null

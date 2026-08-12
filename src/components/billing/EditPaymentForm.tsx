@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { todayISO } from '@utils/date'
 import type { Payment, Student } from '@/types'
 import { DEFAULT_CURRENCY } from '@constants'
 
@@ -10,41 +11,60 @@ interface EditPaymentFormProps {
 }
 
 export default function EditPaymentForm({ payment, student, onSave, onClose }: EditPaymentFormProps) {
-  const today = new Date().toISOString().slice(0, 10)
+  const today = todayISO()
   const [form, setForm] = useState({
     date:   payment.date,
-    amount: payment.amount,
+    amount: String(payment.amount),
     note:   payment.note ?? '',
   })
+  const [error, setError] = useState<string | null>(null)
+
+  function handleSubmit(e: React.FormEvent) {
+    e.preventDefault()
+    const amount = parseFloat(form.amount)
+    if (!Number.isFinite(amount) || amount <= 0) {
+      setError('Enter an amount greater than zero.')
+      return
+    }
+    if (!form.date) {
+      setError('Pick a date.')
+      return
+    }
+    if (form.date > today) {
+      setError('A payment can\'t be dated in the future.')
+      return
+    }
+    setError(null)
+    onSave({ date: form.date, amount, note: form.note })
+  }
 
   return (
-    <form onSubmit={(e) => {
-      e.preventDefault()
-      const amount = parseFloat(String(form.amount))
-      if (!amount || amount <= 0) return
-      onSave({ ...form, amount })
-    }} className="space-y-4">
+    <form onSubmit={handleSubmit} className="space-y-4">
       <div>
-        <label className="label">Date</label>
+        <label className="label">Date received</label>
         <input
           type="date"
           className="input"
           value={form.date}
           max={today}
-          onChange={(e) => setForm({ ...form, date: e.target.value })}
+          onChange={(e) => { setForm({ ...form, date: e.target.value }); setError(null) }}
         />
+        <p className="text-xs text-gray-400 mt-1">
+          For your records only — payments always clear the oldest unpaid cycle first.
+        </p>
       </div>
       <div>
         <label className="label">Amount ({student.currency ?? DEFAULT_CURRENCY})</label>
         <input
           type="number"
-          className="input"
-          min="1"
-          step="1"
+          className={`input ${error ? 'border-red-400 focus:ring-red-400' : ''}`}
+          min="0"
+          step="0.01"
           value={form.amount}
-          onChange={(e) => setForm({ ...form, amount: parseFloat(e.target.value) })}
+          onChange={(e) => { setForm({ ...form, amount: e.target.value }); setError(null) }}
           required
         />
+        {error && <p className="text-xs text-red-500 mt-1">{error}</p>}
       </div>
       <div>
         <div className="flex items-center justify-between mb-1">

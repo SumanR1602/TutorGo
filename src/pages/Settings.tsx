@@ -8,6 +8,7 @@ import { requestNotificationPermission, showNotification } from '@utils/notifica
 import { exportAllData, exportBackupJSON, parseBackupJSON } from '@utils/storage'
 import type { ParsedBackup } from '@utils/storage'
 import { validateName } from '@utils/validators'
+import { APP_VERSION } from '@constants'
 import TimePicker12h from '@components/shared/TimePicker12h'
 import { useToast } from '@hooks/useToast'
 import type { Settings } from '@/types'
@@ -53,10 +54,11 @@ export default function Settings() {
   function handleSave() {
     const err = validateName(local.teacherName)
     if (err) { showToast(err, 'error'); return }
-    updateSettings({
-      teacherName:       local.teacherName.trim(),
-      dailyReminderTime: local.dailyReminderTime,
-    })
+    const teacherName = local.teacherName.trim()
+    updateSettings({ teacherName, dailyReminderTime: local.dailyReminderTime })
+    // Mirror the trimmed value back, or `isDirty` stays true forever whenever
+    // the typed name had trailing whitespace.
+    setLocal((prev) => ({ ...prev, teacherName }))
     showToast('Settings saved', 'success')
   }
 
@@ -81,7 +83,12 @@ export default function Settings() {
 
   function handleConfirmImport() {
     if (!pendingImport) return
-    restoreBackup(pendingImport.students, pendingImport.sessions, pendingImport.payments)
+    restoreBackup(
+      pendingImport.students,
+      pendingImport.sessions,
+      pendingImport.payments,
+      pendingImport.breaks,
+    )
     setPendingImport(null)
     showToast('Data restored from backup', 'success')
   }
@@ -241,7 +248,7 @@ export default function Settings() {
 
         <div className="flex flex-col items-center gap-1 pb-2">
           <Logo size={24} withName />
-          <p className="text-xs text-gray-300">v1.0.0 · Built for teachers</p>
+          <p className="text-xs text-gray-300">v{APP_VERSION} · Built for teachers</p>
         </div>
       </div>
 

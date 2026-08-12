@@ -1,6 +1,7 @@
-import { useState } from 'react'
+import { useState, useMemo } from 'react'
 import useAppStore from '@store/useStore'
 import { formatCurrency, formatDate } from '@utils/billing'
+import { getStudentLedger } from '@utils/billingCore'
 import { DEFAULT_CURRENCY } from '@constants'
 import { Trash2, CreditCard, Pencil } from 'lucide-react'
 import { useToast } from '@hooks/useToast'
@@ -14,23 +15,39 @@ interface StudentPaymentHistoryProps {
 }
 
 export default function StudentPaymentHistory({ student }: StudentPaymentHistoryProps) {
-  const getPaymentsByStudent = useAppStore((s) => s.getPaymentsByStudent)
-  const deletePayment        = useAppStore((s) => s.deletePayment)
-  const updatePayment        = useAppStore((s) => s.updatePayment)
-  const getTotalPaid         = useAppStore((s) => s.getTotalPaid)
-  const getBalance           = useAppStore((s) => s.getBalance)
-  const { showToast }        = useToast()
+  // Subscribe to the data, not to selector functions — see StudentCard.
+  const allPayments   = useAppStore((s) => s.payments)
+  const sessions      = useAppStore((s) => s.sessions)
+  const breaks        = useAppStore((s) => s.breaks)
+  const deletePayment = useAppStore((s) => s.deletePayment)
+  const updatePayment = useAppStore((s) => s.updatePayment)
+  const { showToast } = useToast()
 
   const [editPayment,      setEditPayment]      = useState<Payment | null>(null)
   const [confirmDeleteId,  setConfirmDeleteId]  = useState<string | null>(null)
 
-  const payments  = [...getPaymentsByStudent(student.id)].sort((a, b) =>
-    a.date !== b.date
-      ? b.date.localeCompare(a.date)
-      : (b.createdAt ?? '').localeCompare(a.createdAt ?? ''),
+  const payments = useMemo(
+    () => allPayments
+      .filter((p) => p.studentId === student.id)
+      .sort((a, b) =>
+        a.date !== b.date
+          ? b.date.localeCompare(a.date)
+          : (b.createdAt ?? '').localeCompare(a.createdAt ?? ''),
+      ),
+    [allPayments, student.id],
   )
-  const totalPaid = getTotalPaid(student.id)
-  const balance   = getBalance(student.id)
+
+  const ledger = useMemo(
+    () => getStudentLedger(student, sessions, allPayments, breaks),
+    [student, sessions, allPayments, breaks],
+  )
+  const totalPaid = ledger.totalPaid
+
+  const money = ledger.balance > 0
+    ? { label: 'Still pending', value: ledger.balance, box: 'bg-red-50', big: 'text-red-700', small: 'text-red-400' }
+    : ledger.credit > 0
+      ? { label: 'Paid ahead', value: ledger.credit, box: 'bg-indigo-50', big: 'text-indigo-700', small: 'text-indigo-400' }
+      : { label: 'Fully paid', value: 0, box: 'bg-emerald-50', big: 'text-emerald-700', small: 'text-emerald-400' }
 
   function handleDelete(paymentId: string, paymentDate: string, paymentAmount: number) {
     deletePayment(paymentId)
@@ -63,13 +80,11 @@ export default function StudentPaymentHistory({ student }: StudentPaymentHistory
           </p>
           <p className="text-[10px] text-green-400 mt-0.5">Total received</p>
         </div>
-        <div className={`rounded-xl p-3 text-center ${balance > 0 ? 'bg-red-50' : 'bg-emerald-50'}`}>
-          <p className={`text-lg font-bold ${balance > 0 ? 'text-red-700' : 'text-emerald-700'}`}>
-            {formatCurrency(Math.abs(balance), student.currency ?? DEFAULT_CURRENCY)}
+        <div className={`rounded-xl p-3 text-center ${money.box}`}>
+          <p className={`text-lg font-bold ${money.big}`}>
+            {formatCurrency(money.value, student.currency ?? DEFAULT_CURRENCY)}
           </p>
-          <p className={`text-[10px] mt-0.5 ${balance > 0 ? 'text-red-400' : 'text-emerald-400'}`}>
-            {balance > 0 ? 'Still pending' : 'Fully paid'}
-          </p>
+          <p className={`text-[10px] mt-0.5 ${money.small}`}>{money.label}</p>
         </div>
       </div>
 

@@ -8,14 +8,15 @@ import FilterPanel from '@components/sessions/FilterPanel'
 import StudentAvatar from '@components/shared/StudentAvatar'
 import useAppStore from '@store/useStore'
 import { formatDate } from '@utils/billing'
-import { formatMonthLong } from '@utils/date'
+import { getBillingCycles, findCycleForDate } from '@utils/billingCore'
+import { formatMonthLong, formatDayMonth } from '@utils/date'
 import { useToast } from '@hooks/useToast'
 import type { Session } from '@/types'
 
 export default function Sessions() {
   const students      = useAppStore((s) => s.students)
   const sessions      = useAppStore((s) => s.sessions)
-  const payments      = useAppStore((s) => s.payments)
+  const breaks        = useAppStore((s) => s.breaks)
   const deleteSession = useAppStore((s) => s.deleteSession)
   const { showToast } = useToast()
 
@@ -208,12 +209,30 @@ export default function Sessions() {
         onConfirm={() => confirmDeleteId && handleDelete(confirmDeleteId)}
         message={(() => {
           const s = sessions.find((x) => x.id === confirmDeleteId)
-          const isBilled = s
-            ? payments.some((p) => p.studentId === s.studentId && p.date.slice(0, 7) === s.date.slice(0, 7))
-            : false
-          return isBilled
-            ? 'This session has already been billed. Deleting it will reduce the total due and may create a credit balance on the next receipt.'
-            : 'Are you sure you want to delete this session? This cannot be undone.'
+          if (!s) return 'Are you sure you want to delete this session? This cannot be undone.'
+
+          // "Billed" means this session's own cycle is settled — not that some
+          // payment happened to land in the same calendar month.
+          const student = students.find((x) => x.id === s.studentId)
+          if (!student) return 'Are you sure you want to delete this session? This cannot be undone.'
+
+          const cycle = findCycleForDate(
+            getBillingCycles(student, sessions, breaks), s.date,
+          )
+          const settled = cycle && cycle.amount > 0 && cycle.balance <= 0
+
+          if (!cycle) {
+            return 'This session falls outside every billing cycle, so deleting it will not change any amount.'
+          }
+          if (settled && s.type === 'extra' && (s.extraAmount ?? 0) > 0) {
+            return `This extra class is part of a settled cycle (${formatDayMonth(cycle.start)} → ` +
+              `${formatDayMonth(cycle.end)}). Deleting it removes its charge and will leave a credit balance.`
+          }
+          if (settled) {
+            return `This session belongs to a cycle that's already paid up (${formatDayMonth(cycle.start)} → ` +
+              `${formatDayMonth(cycle.end)}). Deleting it won't change the fee — the cycle is charged either way.`
+          }
+          return 'Are you sure you want to delete this session? This cannot be undone.'
         })()}
       />
     </div>

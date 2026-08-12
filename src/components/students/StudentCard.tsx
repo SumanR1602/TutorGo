@@ -1,9 +1,10 @@
-import { useState, useEffect } from 'react'
-import { Clock, Trash2, Pencil, History, CreditCard } from 'lucide-react'
+import { useState, useEffect, useMemo } from 'react'
+import { Clock, Trash2, Pencil, History, CreditCard, PauseCircle } from 'lucide-react'
 import useAppStore from '@store/useStore'
 import ConfirmModal from '../shared/ConfirmModal'
 import { format12h, convertISTtoTZ, getUTCOffsetLabel } from '@utils/timezone'
 import { formatCurrency } from '@utils/billing'
+import { getStudentLedger } from '@utils/billingCore'
 import { DEFAULT_CURRENCY } from '@constants'
 import { useToast } from '@hooks/useToast'
 import Modal from '../shared/Modal'
@@ -11,6 +12,7 @@ import StudentForm from './StudentForm'
 import StudentAvatar from '../shared/StudentAvatar'
 import StudentSessionHistory from './StudentSessionHistory'
 import StudentPaymentHistory from './StudentPaymentHistory'
+import StudentBreaks from './StudentBreaks'
 import type { Student } from '@/types'
 
 interface StudentCardProps {
@@ -18,8 +20,12 @@ interface StudentCardProps {
 }
 
 export default function StudentCard({ student }: StudentCardProps) {
-  const getTotalHours = useAppStore((s) => s.getTotalHours)
-  const getBalance    = useAppStore((s) => s.getBalance)
+  // Subscribe to the DATA, not to the selector functions — a function
+  // reference never changes, so subscribing to one leaves the card showing
+  // stale figures after a session or payment is edited.
+  const sessions      = useAppStore((s) => s.sessions)
+  const payments      = useAppStore((s) => s.payments)
+  const breaks        = useAppStore((s) => s.breaks)
   const deleteStudent = useAppStore((s) => s.deleteStudent)
   const { showToast } = useToast()
 
@@ -27,10 +33,25 @@ export default function StudentCard({ student }: StudentCardProps) {
   const [showEdit,      setShowEdit]      = useState(false)
   const [showHistory,   setShowHistory]   = useState(false)
   const [showPayments,  setShowPayments]  = useState(false)
+  const [showBreaks,    setShowBreaks]    = useState(false)
 
-  const hours   = getTotalHours(student.id)
-  const balance  = getBalance(student.id)
+  const ledger = useMemo(
+    () => getStudentLedger(student, sessions, payments, breaks),
+    [student, sessions, payments, breaks],
+  )
+
+  const hours  = useMemo(
+    () => sessions.filter((s) => s.studentId === student.id).reduce((sum, s) => sum + s.hours, 0),
+    [sessions, student.id],
+  )
   const tzAbbr = getUTCOffsetLabel(student.timezone)
+
+  // Owed, paid ahead, or square — three distinct states, not two.
+  const money = ledger.balance > 0
+    ? { label: 'Pending', value: ledger.balance, box: 'bg-red-50',    text: 'text-red-600' }
+    : ledger.credit > 0
+      ? { label: 'Credit', value: ledger.credit, box: 'bg-indigo-50', text: 'text-indigo-600' }
+      : { label: 'Paid up', value: 0,            box: 'bg-green-50',  text: 'text-green-600' }
 
   // Live local time — ticks every minute (no seconds needed here)
   function getLocalTime(tz: string) {
@@ -100,10 +121,10 @@ export default function StudentCard({ student }: StudentCardProps) {
             <p className="text-[10px] text-gray-400 mb-0.5">Hours</p>
             <p className="text-xs font-semibold text-gray-800">{hours.toFixed(1)}h</p>
           </div>
-          <div className={`rounded-xl p-2.5 text-center ${balance > 0 ? 'bg-red-50' : 'bg-green-50'}`}>
-            <p className="text-[10px] text-gray-400 mb-0.5">{balance > 0 ? 'Pending' : 'Paid up'}</p>
-            <p className={`text-xs font-semibold ${balance > 0 ? 'text-red-600' : 'text-green-600'}`}>
-              {formatCurrency(balance, student.currency ?? DEFAULT_CURRENCY)}
+          <div className={`rounded-xl p-2.5 text-center ${money.box}`}>
+            <p className="text-[10px] text-gray-400 mb-0.5">{money.label}</p>
+            <p className={`text-xs font-semibold ${money.text}`}>
+              {formatCurrency(money.value, student.currency ?? DEFAULT_CURRENCY)}
             </p>
           </div>
         </div>
@@ -126,7 +147,7 @@ export default function StudentCard({ student }: StudentCardProps) {
           )}
         </div>
 
-        <div className="flex gap-2 pt-1 border-t border-gray-100">
+        <div className="flex gap-1 pt-1 border-t border-gray-100">
           <button
             onClick={() => setShowHistory(true)}
             className="flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-xl text-xs font-medium text-gray-500 hover:bg-gray-50 transition-colors"
@@ -138,6 +159,12 @@ export default function StudentCard({ student }: StudentCardProps) {
             className="flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-xl text-xs font-medium text-gray-500 hover:bg-gray-50 transition-colors"
           >
             <CreditCard size={13} /> Payments
+          </button>
+          <button
+            onClick={() => setShowBreaks(true)}
+            className="flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-xl text-xs font-medium text-gray-500 hover:bg-gray-50 transition-colors"
+          >
+            <PauseCircle size={13} /> Breaks
           </button>
         </div>
       </div>
@@ -152,6 +179,10 @@ export default function StudentCard({ student }: StudentCardProps) {
 
       <Modal isOpen={showPayments} onClose={() => setShowPayments(false)} title={`${student.name} – Payments`}>
         <StudentPaymentHistory student={student} />
+      </Modal>
+
+      <Modal isOpen={showBreaks} onClose={() => setShowBreaks(false)} title={`${student.name} – Breaks`}>
+        <StudentBreaks student={student} />
       </Modal>
 
       <ConfirmModal

@@ -2,8 +2,15 @@ import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import { VitePWA } from 'vite-plugin-pwa'
 import path from 'path'
+import { createRequire } from 'module'
+
+const { version } = createRequire(import.meta.url)('./package.json') as { version: string }
 
 export default defineConfig({
+  define: {
+    // Single source of truth for the version string shown in Settings.
+    __APP_VERSION__: JSON.stringify(version),
+  },
   resolve: {
     alias: {
       '@': path.resolve(__dirname, 'src'),

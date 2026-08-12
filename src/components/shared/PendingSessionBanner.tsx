@@ -1,6 +1,8 @@
 import { useState } from 'react'
 import { X, CheckCircle } from 'lucide-react'
 import useAppStore from '@store/useStore'
+import { isReminderMuted } from '@utils/notifications'
+import { todayISO } from '@utils/date'
 import Modal from './Modal'
 import SessionForm from '../sessions/SessionForm'
 import StudentAvatar from './StudentAvatar'
@@ -8,16 +10,25 @@ import StudentAvatar from './StudentAvatar'
 export default function PendingSessionBanner() {
   const pendingReminders       = useAppStore((s) => s.pendingReminders)
   const students               = useAppStore((s) => s.students)
+  const breaks                 = useAppStore((s) => s.breaks)
   const dismissPendingReminder = useAppStore((s) => s.dismissPendingReminder)
 
   const [logFor, setLogFor] = useState<string | null>(null)
 
-  if (pendingReminders.length === 0) return null
+  // A break added after the reminder fired should still silence it — otherwise
+  // the banner asks for a session the form would refuse to accept.
+  const today = todayISO()
+  const visible = pendingReminders.filter((id) => {
+    const student = students.find((s) => s.id === id)
+    return student ? !isReminderMuted(student, breaks, today) : false
+  })
+
+  if (visible.length === 0) return null
 
   return (
     <>
       <div className="space-y-2">
-        {pendingReminders.map((studentId) => {
+        {visible.map((studentId) => {
           const student = students.find((s) => s.id === studentId)
           if (!student) return null
 

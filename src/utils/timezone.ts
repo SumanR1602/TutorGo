@@ -4,6 +4,48 @@
  */
 
 import type { TimezoneOption, ConvertedTime } from '@/types'
+import { TEACHER_TIMEZONE } from '@constants'
+import { todayISO } from './date'
+
+/** Minutes `tz` is ahead of UTC at a given instant (handles DST). */
+function tzOffsetMinutes(tz: string, at: Date): number {
+  const parts = Object.fromEntries(
+    new Intl.DateTimeFormat('en-US', {
+      timeZone: tz, hour12: false,
+      year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', second: '2-digit',
+    })
+      .formatToParts(at)
+      .map((p) => [p.type, p.value]),
+  )
+  const asUTC = Date.UTC(
+    +parts.year, +parts.month - 1, +parts.day,
+    +parts.hour % 24, +parts.minute, +parts.second,
+  )
+  return (asUTC - at.getTime()) / 60_000
+}
+
+/**
+ * The real instant at which the clock in `tz` reads `HH:mm` on `dateIso`.
+ *
+ * Doing this properly matters: `new Date(y, m, d, h, min)` builds the time in
+ * the *device's* zone, so every "IST" conversion below was silently wrong
+ * whenever the teacher's device wasn't set to IST.
+ */
+export function zonedTimeToInstant(dateIso: string, timeHHmm: string, tz: string): Date {
+  const [y, mo, d] = dateIso.split('-').map(Number)
+  const [h, mi] = timeHHmm.split(':').map(Number)
+  const guess = Date.UTC(y, mo - 1, d, h || 0, mi || 0)
+  const offset = tzOffsetMinutes(tz, new Date(guess))
+  return new Date(guess - offset * 60_000)
+}
+
+/** "HH:mm" right now in the teacher's timezone. */
+export function nowInTeacherTZ(tz: string = TEACHER_TIMEZONE): string {
+  return new Intl.DateTimeFormat('en-GB', {
+    timeZone: tz, hour: '2-digit', minute: '2-digit', hour12: false,
+  }).format(new Date())
+}
 
 // City name → IANA timezone lookup (case-insensitive)
 export const CITY_TO_TIMEZONE: Record<string, string> = {
@@ -97,9 +139,10 @@ export const TIMEZONE_OPTIONS: TimezoneOption[] = [
  * Returns { time: "10:30 AM", date: "Mon, 23 May" }
  */
 export function convertISTtoTZ(istTimeStr: string, targetTimezone: string): ConvertedTime {
-  const [hours, minutes] = istTimeStr.split(':').map(Number)
-  const now = new Date()
-  const istDate = new Date(now.getFullYear(), now.getMonth(), now.getDate(), hours, minutes, 0)
+  if (!istTimeStr) return { time: '', date: '' }
+  // Anchor to today's date *in IST*, not on the device, so the result is the
+  // same whichever timezone the teacher's phone happens to be in.
+  const istDate = zonedTimeToInstant(todayISO(TEACHER_TIMEZONE), istTimeStr, TEACHER_TIMEZONE)
 
   const timeFormatter = new Intl.DateTimeFormat('en-US', {
     timeZone: targetTimezone,
@@ -163,16 +206,13 @@ export function getUTCOffsetLabel(timezone: string): string {
  * (06:00–22:00) in the target timezone.
  */
 export function isReasonableHour(istTimeStr: string, targetTimezone: string): boolean {
-  const [hours, minutes] = istTimeStr.split(':').map(Number)
-  // Build a Date using today's date with the IST hours/minutes
-  const istDate = new Date()
-  istDate.setHours(hours, minutes, 0, 0)
-  // Extract the local hour in the target timezone
+  if (!istTimeStr) return true
+  const istDate = zonedTimeToInstant(todayISO(TEACHER_TIMEZONE), istTimeStr, TEACHER_TIMEZONE)
   const localHourStr = new Intl.DateTimeFormat('en-US', {
     timeZone: targetTimezone,
     hour: 'numeric',
     hour12: false,
   }).format(istDate)
-  const localHour = parseInt(localHourStr, 10)
+  const localHour = parseInt(localHourStr, 10) % 24
   return localHour >= 6 && localHour <= 22
 }

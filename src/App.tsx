@@ -14,6 +14,7 @@ import OnboardingModal from '@components/shared/OnboardingModal'
 export default function App() {
   const settings           = useAppStore((s) => s.settings)
   const students           = useAppStore((s) => s.students)
+  const breaks             = useAppStore((s) => s.breaks)
   const addPendingReminder = useAppStore((s) => s.addPendingReminder)
 
   const globalCleanupRef:     React.MutableRefObject<(() => void) | null> = useRef(null)
@@ -33,12 +34,12 @@ export default function App() {
     return () => { globalCleanupRef.current?.() }
   }, [settings.reminderEnabled, settings.dailyReminderTime])
 
-  // Per-student class reminders
+  // Per-student class reminders — muted while a student is on a break
   useEffect(() => {
     perStudentCleanupRef.current?.()
-    perStudentCleanupRef.current = startPerStudentReminders(students, addPendingReminder)
+    perStudentCleanupRef.current = startPerStudentReminders(students, addPendingReminder, breaks)
     return () => { perStudentCleanupRef.current?.() }
-  }, [students, addPendingReminder])
+  }, [students, breaks, addPendingReminder])
 
   const isNewUser = !settings.onboardingCompleted
 

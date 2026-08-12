@@ -3,7 +3,9 @@
  * Web Notifications API wrapper for daily class reminders
  */
 
-import type { Student } from '@/types'
+import type { Student, Break } from '@/types'
+import { todayISO } from './date'
+import { isOnBreak } from './billingCore'
 
 export async function requestNotificationPermission(): Promise<boolean> {
   if (!('Notification' in window)) return false
@@ -65,13 +67,30 @@ export function startReminderScheduler(timeStr: string, message: string): () => 
 }
 
 /**
+ * True when today is a day this student shouldn't be nudged about: they're on
+ * a declared break, they've left, or their billing hasn't started yet.
+ */
+export function isReminderMuted(
+  student: Student, breaks: Break[], today: string = todayISO(),
+): boolean {
+  if (student.endDate && today > student.endDate) return true
+  if (student.billingAnchorDate && today < student.billingAnchorDate) return true
+  return isOnBreak(breaks, student.id, today)
+}
+
+/**
  * Starts per-student reminder schedulers.
  * The in-app banner (onReminder) fires regardless of notification permission.
  * Browser notification only fires if permission is granted.
+ *
+ * Students on a break — or who have left, or haven't started — are skipped, so
+ * a holiday actually stops the daily "time for their class!" nudge instead of
+ * prompting for a session the app would then refuse to accept.
  */
 export function startPerStudentReminders(
   students: Student[],
   onReminder: (studentId: string) => void,
+  breaks: Break[] = [],
 ): () => void {
   const scheduled = students.filter((s) => s.scheduledTime)
   if (scheduled.length === 0) return () => {}
@@ -81,9 +100,11 @@ export function startPerStudentReminders(
     const h = now.getHours()
     const m = now.getMinutes()
     const todayKey = now.toDateString()
+    const today = todayISO()
 
     scheduled.forEach((student) => {
       if (!student.scheduledTime) return
+      if (isReminderMuted(student, breaks, today)) return
       const [targetH, targetM] = student.scheduledTime.split(':').map(Number)
       const storageKey = `reminder-${student.id}-${todayKey}`
 

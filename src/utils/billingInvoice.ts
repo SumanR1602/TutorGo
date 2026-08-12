@@ -1,12 +1,16 @@
 /**
  * billingInvoice.ts
- * Orchestrator — mirrors billingReceipt.ts logic but for invoices (pre-payment).
- * Auto-determines billing period from last payment date.
+ * Builds an invoice from the billing ledger.
+ *
+ * An invoice bills whole cycles, so it can no longer double-count a calendar
+ * month that straddles the last payment — the defect in the previous version.
  */
-import { formatDate, formatCurrency, openPDFWindow } from './billing'
+import { formatCurrency, openPDFWindow } from './billing'
+import { getStudentLedger } from './billingCore'
+import { formatDate, formatDayMonth, todayISO } from './date'
 import { buildInvoiceHTML } from './templates/billingInvoiceTemplate'
 import { DEFAULT_CURRENCY } from '@constants'
-import type { Student, Session, Payment } from '@/types'
+import type { Student, Session, Payment, Break, BillingCycle } from '@/types'
 
 export async function openInvoicePDF(
   student: Student,
@@ -15,99 +19,86 @@ export async function openInvoicePDF(
   teacherName: string = 'Teacher',
   dateFrom: string = '',
   dateTo: string = '',
+  breaks: Break[] = [],
 ): Promise<void> {
   const currency    = student.currency ?? DEFAULT_CURRENCY
   const isMonthly   = (student.rateType ?? 'hourly') === 'monthly'
-  const formatValue = (n: number) => formatCurrency(n, currency)
-  const today       = new Date()
-  const todayIso    = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(today)
-  const issued      = today.toLocaleDateString('en-GB', { timeZone: 'Asia/Kolkata', day: '2-digit', month: 'long', year: 'numeric' })
-  const invNo       = `INV-${todayIso.replace(/-/g,'')}-${student.name.slice(0,3).toUpperCase()}`
+  const fmt         = (n: number) => formatCurrency(n, currency)
+  const todayIso    = todayISO()
+  const issued      = formatDayMonth(todayIso)
+  const invNo       = `INV-${todayIso.replace(/-/g, '')}-${student.name.slice(0, 3).toUpperCase()}`
 
-  const dayAfter = (iso: string) => {
-    const d = new Date(iso + 'T00:00:00')
-    d.setDate(d.getDate() + 1)
-    return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`
-  }
+  const ledger = getStudentLedger(student, sessions, payments, breaks, todayIso)
 
-  // ── 1. Determine period from last payment ──────────────────────────
-  const sortedPayments = [...payments].sort((a, b) => a.date.localeCompare(b.date))
-  const lastPayment    = sortedPayments[sortedPayments.length - 1] ?? null
-  const periodStart    = lastPayment ? lastPayment.date : null
+  // ── 1. Which cycles does this invoice cover? ───────────────────────
+  // Default: everything still owed. With a date range: cycles overlapping it.
+  const hasRange = Boolean(dateFrom || dateTo)
+  const invoiced: BillingCycle[] = ledger.cycles.filter((c) => {
+    if (!c.started) return false
+    if (!hasRange) return c.balance > 0
+    return (!dateTo || c.start <= dateTo) && (!dateFrom || c.end >= dateFrom)
+  })
 
-  const effectiveDateFrom = dateFrom || (periodStart ? dayAfter(periodStart) : '')
-  const effectiveDateTo   = dateTo   || todayIso
+  const periodDue    = invoiced.reduce((sum, c) => sum + c.amount, 0)
+  const amountDueNow = invoiced.reduce((sum, c) => sum + c.balance, 0)
+  const carryForward = ledger.credit
 
-  // ── 2. Sessions for this billing period ───────────────────────────
-  const filtered = sessions
-    .filter((s) => (!effectiveDateFrom || s.date >= effectiveDateFrom) && s.date <= effectiveDateTo)
+  const mySessions = sessions.filter((s) => s.studentId === student.id)
+  const covered = mySessions
+    .filter((s) => invoiced.some((c) => s.date >= c.start && s.date <= c.end))
     .sort((a, b) => a.date.localeCompare(b.date))
 
-  const totalHours = filtered.reduce((sum, s) => sum + s.hours, 0)
-  const sessionCount = filtered.length
+  const totalHours   = covered.reduce((sum, s) => sum + s.hours, 0)
+  const sessionCount = covered.length
 
-  // ── 3. Period due ──────────────────────────────────────────────────
-  const periodDue = isMonthly
-    ? new Set(filtered.map((s) => s.date.slice(0,7))).size * student.ratePerHour
-    : filtered.reduce((sum, s) => sum + s.hours * student.ratePerHour, 0)
+  const periodLabel = invoiced.length
+    ? `${formatDate(invoiced[0].start)} → ${formatDate(invoiced[invoiced.length - 1].end)}`
+    : `up to ${formatDate(dateTo || todayIso)}`
 
-  // ── 4. Carry-forward (same logic as receipt) ───────────────────────
-  const sessionsBeforePeriod = sessions.filter((s) => periodStart ? s.date <= periodStart : false)
-  const costBeforePeriod = isMonthly
-    ? new Set(sessionsBeforePeriod.map((s) => s.date.slice(0,7))).size * student.ratePerHour
-    : sessionsBeforePeriod.reduce((sum, s) => sum + s.hours * student.ratePerHour, 0)
-
-  const totalPaid    = payments.reduce((sum, p) => sum + p.amount, 0)
-  const carryForward = totalPaid - costBeforePeriod   // +ve = credit, -ve = debit
-
-  // ── 5. Amount due now ──────────────────────────────────────────────
-  const amountDueNow = periodDue - carryForward  // credit reduces; previous debit increases
-
-  // ── 6. Period label ────────────────────────────────────────────────
-  const periodLabel = effectiveDateFrom
-    ? `${formatDate(effectiveDateFrom)} → ${formatDate(effectiveDateTo)}`
-    : `up to ${formatDate(effectiveDateTo)}`
-
-  // ── 7. Build session rows HTML ─────────────────────────────────────
+  // ── 2. Line items, grouped by cycle ────────────────────────────────
   let sessionRows = ''
-  if (isMonthly) {
-    const monthKeys = [...new Set(filtered.map((s) => s.date.slice(0,7)))].sort()
-    monthKeys.forEach((key) => {
-      const monthSessions = filtered.filter((s) => s.date.startsWith(key))
-      const monthHours    = monthSessions.reduce((sum, s) => sum + s.hours, 0)
-      monthSessions.forEach((s) => {
-        sessionRows += `<tr class="data-row">
-            <td>${formatDate(s.date)}</td>
-            <td><span class="badge badge-${s.type}">${s.type === 'extra' ? 'Extra' : 'Regular'}</span></td>
-            <td class="c">${s.hours}h</td>
-            <td class="r muted">—</td>
-            <td class="r muted">—</td>
-          </tr>`
-      })
-      sessionRows += `<tr class="fee-row">
-          <td colspan="2"><strong>${new Date(key+'-01').toLocaleString('en-IN',{month:'long',year:'numeric'})} — Monthly Tuition Fee</strong></td>
-          <td class="c"><strong>${monthHours.toFixed(1)}h</strong></td>
-          <td class="r">${formatValue(student.ratePerHour)}/mo</td>
-          <td class="r"><strong>${formatValue(student.ratePerHour)}</strong></td>
-        </tr>`
-    })
-  } else {
-    filtered.forEach((s) => {
+  for (const cycle of invoiced) {
+    const inCycle = covered.filter((s) => s.date >= cycle.start && s.date <= cycle.end)
+
+    for (const s of inCycle) {
+      const isExtra   = s.type === 'extra'
+      const lineTotal = isMonthly
+        ? (isExtra ? (s.extraAmount ?? 0) : null)
+        : (isExtra && typeof s.extraAmount === 'number'
+            ? s.extraAmount
+            : s.hours * cycle.rate)
+      const lineRate = isMonthly
+        ? (isExtra ? 'extra' : '—')
+        : `${fmt(cycle.rate)}/hr`
+
       sessionRows += `<tr class="data-row">
           <td>${formatDate(s.date)}</td>
-          <td><span class="badge badge-${s.type}">${s.type === 'extra' ? 'Extra' : 'Regular'}</span></td>
+          <td><span class="badge badge-${s.type}">${isExtra ? 'Extra' : 'Regular'}</span></td>
           <td class="c">${s.hours}h</td>
-          <td class="r">${formatValue(student.ratePerHour)}/hr</td>
-          <td class="r">${formatValue(s.hours * student.ratePerHour)}</td>
+          <td class="r ${lineTotal === null ? 'muted' : ''}">${lineRate}</td>
+          <td class="r ${lineTotal === null ? 'muted' : ''}">${lineTotal === null ? '—' : fmt(lineTotal)}</td>
         </tr>`
-    })
+    }
+
+    if (isMonthly) {
+      const extended = cycle.breakDays > 0
+        ? ` <span style="font-weight:400">(extended ${cycle.breakDays} day${cycle.breakDays !== 1 ? 's' : ''} for breaks)</span>`
+        : ''
+      const proRated = cycle.proRated ? ' <span style="font-weight:400">(pro-rated)</span>' : ''
+      sessionRows += `<tr class="fee-row">
+          <td colspan="2"><strong>${formatDayMonth(cycle.start)} → ${formatDayMonth(cycle.end)} — Monthly Fee</strong>${extended}${proRated}</td>
+          <td class="c"><strong>${cycle.hours.toFixed(1)}h</strong></td>
+          <td class="r">${fmt(cycle.rate)}/mo</td>
+          <td class="r"><strong>${fmt(cycle.baseAmount)}</strong></td>
+        </tr>`
+    }
   }
 
-  // ── 8. Render ──────────────────────────────────────────────────────
+  // ── 3. Render ──────────────────────────────────────────────────────
   const html = buildInvoiceHTML({
     invNo, teacherName, issued, student, isMonthly,
     periodLabel, sessionCount, totalHours, periodDue, carryForward, amountDueNow,
-    sessionRows, fmt: formatValue,
+    sessionRows, fmt,
   })
 
   const safeName = student.name.replace(/[^a-zA-Z0-9]/g, '-')

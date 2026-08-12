@@ -12,6 +12,12 @@ export const CURRENCIES: { value: string; label: string }[] = [
   // Add more currencies here when needed
 ]
 
+/**
+ * Shown in Settings. Injected from package.json at build time so the number
+ * can't drift from the released package — see `define` in vite.config.ts.
+ */
+export const APP_VERSION: string = __APP_VERSION__
+
 export const TEACHER_TIMEZONE = 'Asia/Kolkata'
 export const DEFAULT_TIMEZONE  = TEACHER_TIMEZONE
 export const DEFAULT_CURRENCY = 'INR'

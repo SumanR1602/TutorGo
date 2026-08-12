@@ -1,12 +1,26 @@
 /**
  * billingReceipt.ts
- * Orchestrator — computes the receipt data for a specific payment,
- * then delegates HTML rendering to receiptTemplate.ts.
+ * Builds a receipt for one payment.
+ *
+ * Which cycles a payment settles is decided by FIFO allocation, not by the
+ * date it arrived — so a receipt for money paid a month late still names the
+ * cycle it actually cleared.
  */
-import { formatDate, formatCurrency, openPDFWindow } from './billing'
+import { formatCurrency, openPDFWindow } from './billing'
+import { getStudentLedger } from './billingCore'
+import { formatDate, formatDayMonth, todayISO } from './date'
 import { buildReceiptHTML } from './templates/receiptTemplate'
 import { DEFAULT_CURRENCY } from '@constants'
-import type { Student, Session, Payment } from '@/types'
+import type { Student, Session, Payment, Break } from '@/types'
+
+/** Payments in the order money actually arrived. */
+function chronological(payments: Payment[]): Payment[] {
+  return [...payments].sort((a, b) =>
+    a.date !== b.date
+      ? a.date.localeCompare(b.date)
+      : (a.createdAt ?? '').localeCompare(b.createdAt ?? ''),
+  )
+}
 
 export async function openReceiptPDF(
   student: Student,
@@ -14,114 +28,94 @@ export async function openReceiptPDF(
   payments: Payment[],
   payment: Payment,
   teacherName: string = 'Teacher',
+  breaks: Break[] = [],
 ): Promise<void> {
-  const currency     = student.currency ?? DEFAULT_CURRENCY
-  const isMonthly    = (student.rateType ?? 'hourly') === 'monthly'
-  const formatValue  = (n: number) => formatCurrency(n, currency)
-  const today        = new Date()
-  const issued       = today.toLocaleDateString('en-GB', { day: '2-digit', month: 'long', year: 'numeric' })
-  const recNo        = `REC-${payment.date.replace(/-/g, '')}-${student.name.slice(0, 3).toUpperCase()}`
+  const currency  = student.currency ?? DEFAULT_CURRENCY
+  const isMonthly = (student.rateType ?? 'hourly') === 'monthly'
+  const fmt       = (n: number) => formatCurrency(n, currency)
+  const today     = todayISO()
+  const issued    = formatDayMonth(today)
+  const recNo     = `REC-${payment.date.replace(/-/g, '')}-${student.name.slice(0, 3).toUpperCase()}`
 
-  // ── 1. Find the previous payment to determine the period start ────
-  const sortedPayments = [...payments].sort((a, b) =>
-    a.date !== b.date
-      ? a.date.localeCompare(b.date)
-      : (a.createdAt ?? '').localeCompare(b.createdAt ?? ''),
-  )
-  const currentIdx  = sortedPayments.findIndex((p) => p.id === payment.id)
-  if (currentIdx === -1) return  // payment not in list — bail to avoid slice(0,-1) bug
-  const prevPayment = currentIdx > 0 ? sortedPayments[currentIdx - 1] : null
-  const periodStart = prevPayment ? prevPayment.date : null
+  const mine    = chronological(payments.filter((p) => p.studentId === student.id))
+  const idx     = mine.findIndex((p) => p.id === payment.id)
+  if (idx === -1) return  // payment not in the list — nothing to receipt
 
-  // ── 2. Sessions for this period only ─────────────────────────────
-  const sessionsPeriod = sessions
-    .filter((s) => s.date <= payment.date && (!periodStart || s.date > periodStart))
+  // ── 1. Ledger immediately before and after this payment ────────────
+  const before = getStudentLedger(student, sessions, mine.slice(0, idx), breaks, today)
+  const after  = getStudentLedger(student, sessions, mine.slice(0, idx + 1), breaks, today)
+
+  // ── 2. Cycles this payment actually moved ──────────────────────────
+  const touched = after.cycles.filter((c, i) => c.paid > (before.cycles[i]?.paid ?? 0))
+  const periodDue = touched.reduce((sum, c) => sum + c.amount, 0)
+
+  // +ve = credit carried in, −ve = arrears carried in
+  const carryForward = before.credit - before.balance
+  // +ve = still in credit after paying, −ve = still owing
+  const creditBalance = after.credit - after.balance
+  const creditHours = isMonthly || !student.ratePerHour
+    ? null
+    : creditBalance / student.ratePerHour
+
+  // ── 3. Sessions inside those cycles ────────────────────────────────
+  const covered = sessions
+    .filter((s) => s.studentId === student.id)
+    .filter((s) => touched.some((c) => s.date >= c.start && s.date <= c.end))
     .sort((a, b) => a.date.localeCompare(b.date))
 
-  // ── 3. Cumulative totals ────────────────────────────────────────
-  const paymentsUpTo  = payments.filter((p) => p.date <= payment.date)
+  const totalHours   = covered.reduce((sum, s) => sum + s.hours, 0)
+  const sessionCount = covered.length
 
-  // ── 5. Carry-forward balance ──────────────────────────────────────
-  const prevPaymentsTotal = sortedPayments
-    .slice(0, currentIdx)
-    .reduce((sum, p) => sum + p.amount, 0)
+  const periodLabel = touched.length
+    ? `${formatDate(touched[0].start)} → ${formatDate(touched[touched.length - 1].end)}`
+    : `Advance payment · received ${formatDate(payment.date)}`
 
-  const sessionsBeforePeriod = sessions.filter(
-    (s) => (periodStart ? s.date <= periodStart : false),
-  )
-  const costBeforePeriod = isMonthly
-    ? new Set(sessionsBeforePeriod.map((s) => s.date.slice(0, 7))).size * student.ratePerHour
-    : sessionsBeforePeriod.reduce((sum, s) => sum + s.hours * student.ratePerHour, 0)
-
-  const carryForward = prevPaymentsTotal - costBeforePeriod
-
-  // ── 6. Period due ─────────────────────────────────────────────────
-  const periodDue = isMonthly
-    ? new Set(sessionsPeriod.map((s) => s.date.slice(0, 7))).size * student.ratePerHour
-    : sessionsPeriod.reduce((sum, s) => sum + s.hours * student.ratePerHour, 0)
-
-  const totalHours    = sessionsPeriod.reduce((sum, s) => sum + s.hours, 0)
-  const creditBalance = carryForward + payment.amount - periodDue
-  const creditHours   = isMonthly ? null : creditBalance / student.ratePerHour
-  const sessionCount  = sessionsPeriod.length
-
-  const dayAfter = (iso: string) => {
-    const d = new Date(iso + 'T00:00:00')
-    d.setDate(d.getDate() + 1)
-    const y = d.getFullYear()
-    const m = String(d.getMonth() + 1).padStart(2, '0')
-    const day = String(d.getDate()).padStart(2, '0')
-    return `${y}-${m}-${day}`
-  }
-  const periodLabel = periodStart
-    ? `${dayAfter(periodStart)} → ${payment.date}`
-    : `up to ${payment.date}`
-
-  // ── 7. Build session rows HTML ─────────────────────────────────────
+  // ── 4. Line items, grouped by cycle ────────────────────────────────
   let sessionRows = ''
+  for (const cycle of touched) {
+    const inCycle = covered.filter((s) => s.date >= cycle.start && s.date <= cycle.end)
 
-  if (isMonthly) {
-    const monthKeys = [...new Set(sessionsPeriod.map((s) => s.date.slice(0, 7)))].sort()
-    monthKeys.forEach((key) => {
-      const monthSessions = sessionsPeriod.filter((s) => s.date.startsWith(key))
-      const monthHours    = monthSessions.reduce((sum, s) => sum + s.hours, 0)
-      monthSessions.forEach((s) => {
-        sessionRows += `<tr>
-            <td>${formatDate(s.date)}</td>
-            <td><span class="badge badge-${s.type}">${s.type === 'extra' ? 'Extra' : 'Regular'}</span></td>
-            <td class="c">${s.hours}h</td>
-            <td class="r muted">—</td>
-            <td class="r muted">—</td>
-          </tr>`
-      })
-      sessionRows += `<tr style="background:#f0fdf4">
-          <td colspan="2" style="color:#15803d;font-weight:600">${new Date(key + '-01').toLocaleString('en-IN', { month: 'long', year: 'numeric' })} — Monthly Fee</td>
-          <td class="c" style="color:#15803d;font-weight:600">${monthHours.toFixed(1)}h</td>
-          <td class="r" style="color:#15803d">${formatValue(student.ratePerHour)}/mo</td>
-          <td class="r" style="color:#15803d;font-weight:600">${formatValue(student.ratePerHour)}</td>
-        </tr>`
-    })
-  } else {
-    sessionsPeriod.forEach((s) => {
+    for (const s of inCycle) {
+      const isExtra = s.type === 'extra'
+      const lineTotal = isMonthly
+        ? (isExtra ? (s.extraAmount ?? 0) : null)
+        : (isExtra && typeof s.extraAmount === 'number'
+            ? s.extraAmount
+            : s.hours * cycle.rate)
+      const lineRate = isMonthly
+        ? (isExtra ? 'extra' : '—')
+        : `${fmt(cycle.rate)}/hr`
+
       sessionRows += `<tr>
           <td>${formatDate(s.date)}</td>
-          <td><span class="badge badge-${s.type}">${s.type === 'extra' ? 'Extra' : 'Regular'}</span></td>
+          <td><span class="badge badge-${s.type}">${isExtra ? 'Extra' : 'Regular'}</span></td>
           <td class="c">${s.hours}h</td>
-          <td class="r">${formatValue(student.ratePerHour)}/hr</td>
-          <td class="r">${formatValue(s.hours * student.ratePerHour)}</td>
+          <td class="r ${lineTotal === null ? 'muted' : ''}">${lineRate}</td>
+          <td class="r ${lineTotal === null ? 'muted' : ''}">${lineTotal === null ? '—' : fmt(lineTotal)}</td>
         </tr>`
-    })
+    }
+
+    if (isMonthly) {
+      const extended = cycle.breakDays > 0
+        ? ` <span style="font-weight:400">(extended ${cycle.breakDays} day${cycle.breakDays !== 1 ? 's' : ''} for breaks)</span>`
+        : ''
+      const proRated = cycle.proRated ? ' <span style="font-weight:400">(pro-rated)</span>' : ''
+      sessionRows += `<tr style="background:#f0fdf4">
+          <td colspan="2" style="color:#15803d;font-weight:600">${formatDayMonth(cycle.start)} → ${formatDayMonth(cycle.end)} — Monthly Fee${extended}${proRated}</td>
+          <td class="c" style="color:#15803d;font-weight:600">${cycle.hours.toFixed(1)}h</td>
+          <td class="r" style="color:#15803d">${fmt(cycle.rate)}/mo</td>
+          <td class="r" style="color:#15803d;font-weight:600">${fmt(cycle.baseAmount)}</td>
+        </tr>`
+    }
   }
 
-  // ── 8. Render HTML ─────────────────────────────────────────────────
+  // ── 5. Render ──────────────────────────────────────────────────────
   const html = buildReceiptHTML({
     recNo, teacherName, issued, student, isMonthly,
     payment, periodLabel, sessionRows, sessionCount, totalHours,
-    carryForward, periodDue, creditBalance, creditHours, fmt: formatValue,
+    carryForward, periodDue, creditBalance, creditHours, fmt,
   })
 
-  // ── 9. Open tab + auto-download ──────────────────────────────────────
   const safeName = student.name.replace(/[^a-zA-Z0-9]/g, '-')
-  const filename = `Receipt_${safeName}_${payment.date}_${recNo}`
-  openPDFWindow(html, filename)
+  openPDFWindow(html, `Receipt_${safeName}_${payment.date}_${recNo}`)
 }
