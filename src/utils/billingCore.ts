@@ -16,15 +16,13 @@
  * Hourly students
  *   Calendar months, hours × rate.
  *
- * Students who switch between the two
- *   The timeline splits into segments at each rate-type change. Each segment is
- *   built with its own model, and a monthly cycle cut short by the switch is
- *   pro-rated — so switching never re-prices history.
+ * A student's rate *type* (hourly vs. monthly) is fixed for their lifetime —
+ * only the rate *value* can change, via `rateHistory`.
  */
 
 import type {
   Student, Session, Payment, Break, RateChange, RateType,
-  BillingCycle, StudentLedger, RateSegment,
+  BillingCycle, StudentLedger,
 } from '@/types'
 import {
   todayISO, addDays, addMonthsClamped, daysInclusive, overlapDays,
@@ -69,37 +67,6 @@ export function getRateAt(student: Student, date: string): RateChange {
 /** Last day this student is billable at all: their leave date, or forever. */
 function billableUntil(student: Student, today: string): string {
   return student.endDate ? minIso(student.endDate, today) : today
-}
-
-/**
- * Split the student's life into stretches that share one rate *type*.
- *
- * A rate change that keeps the same type doesn't split anything (the amount is
- * resolved per cycle). Only monthly↔hourly switches create a boundary, because
- * the two models can't be mixed inside one period.
- */
-export function getRateSegments(student: Student, today: string = todayISO()): RateSegment[] {
-  const anchor = student.billingAnchorDate
-  const hardEnd = billableUntil(student, today)
-  if (!anchor || anchor > hardEnd) return []
-
-  const boundaries: string[] = [anchor]
-  let prevType = getRateAt(student, anchor).rateType
-
-  for (const entry of getRateHistory(student)) {
-    if (entry.effectiveFrom <= anchor) continue
-    if (entry.effectiveFrom > hardEnd) break
-    if (entry.rateType !== prevType) {
-      boundaries.push(entry.effectiveFrom)
-      prevType = entry.rateType
-    }
-  }
-
-  return boundaries.map((start, i) => ({
-    start,
-    end: i + 1 < boundaries.length ? addDays(boundaries[i + 1], -1) : hardEnd,
-    rateType: getRateAt(student, start).rateType,
-  }))
 }
 
 // ─── Cycle boundaries ─────────────────────────────────────────────────────
@@ -158,7 +125,7 @@ interface SegmentArgs {
   student: Student
   sessions: Session[]        // already filtered to this student
   breaks: Break[]            // already filtered + normalized
-  segment: RateSegment
+  segment: { start: string; end: string }
   /** Stop generating once a cycle reaches this date. */
   genUntil: string
   /** If set and inside a cycle, that cycle is pro-rated and generation stops. */
@@ -241,7 +208,7 @@ function buildMonthlyCycles(args: SegmentArgs): BillingCycle[] {
   return cycles
 }
 
-/** Hourly: calendar months clipped to the segment, hours × the rate that month. */
+/** Hourly: calendar months clipped to the billable window, hours × the rate that month. */
 function buildHourlyCycles(args: SegmentArgs): BillingCycle[] {
   const { student, sessions, segment, genUntil, today, startIndex } = args
   const from = segment.start
@@ -254,7 +221,7 @@ function buildHourlyCycles(args: SegmentArgs): BillingCycle[] {
   return keys.map((key, i) => {
     const monthStart = `${key}-01`
     const monthEnd = addDays(addMonthsClamped(monthStart, 1), -1)
-    // Clip to the segment so a switch mid-month splits the month correctly.
+    // Clip to the billable window so the first/last month splits correctly.
     const start = maxIso(monthStart, from)
     const end = minIso(monthEnd, to)
 
@@ -298,18 +265,6 @@ function buildHourlyCycles(args: SegmentArgs): BillingCycle[] {
   })
 }
 
-/** Guarantee unique keys even if two segments touch the same calendar month. */
-function dedupeKeys(cycles: BillingCycle[]): BillingCycle[] {
-  const seen = new Set<string>()
-  return cycles.map((c) => {
-    let key = c.key
-    let n = 2
-    while (seen.has(key)) key = `${c.key}-${n++}`
-    seen.add(key)
-    return key === c.key ? c : { ...c, key }
-  })
-}
-
 /**
  * All billing cycles for a student, oldest first, with nothing allocated yet.
  * Prefer `getStudentLedger` — this is exported for tests and for callers that
@@ -321,33 +276,25 @@ export function getBillingCycles(
   breaks: Break[] = [],
   today: string = todayISO(),
 ): BillingCycle[] {
+  const anchor = student.billingAnchorDate
+  const hardEnd = billableUntil(student, today)
+  if (!anchor || anchor > hardEnd) return []
+
   const mine = sessions
     .filter((s) => s.studentId === student.id)
     .sort((a, b) => a.date.localeCompare(b.date))
   const myBreaks = normalizeBreaks(breaks.filter((b) => b.studentId === student.id))
 
-  const segments = getRateSegments(student, today)
-  const cycles: BillingCycle[] = []
+  const terminationDate = student.endDate && student.endDate <= today ? student.endDate : undefined
+  const args: SegmentArgs = {
+    student, sessions: mine, breaks: myBreaks,
+    segment: { start: anchor, end: hardEnd },
+    genUntil: minIso(hardEnd, today), terminationDate, today, startIndex: 0,
+  }
 
-  segments.forEach((segment, si) => {
-    const isLast = si === segments.length - 1
-    const genUntil = minIso(segment.end, today)
-    // Non-final segments end because the rate type switched, which cuts the
-    // cycle short. The final one only terminates if the student has left.
-    const terminationDate = isLast
-      ? (student.endDate && student.endDate <= today ? student.endDate : undefined)
-      : segment.end
-
-    const args: SegmentArgs = {
-      student, sessions: mine, breaks: myBreaks, segment,
-      genUntil, terminationDate, today, startIndex: cycles.length,
-    }
-    cycles.push(...(segment.rateType === 'monthly'
-      ? buildMonthlyCycles(args)
-      : buildHourlyCycles(args)))
-  })
-
-  return dedupeKeys(cycles)
+  return (student.rateType ?? DEFAULT_RATE_TYPE) === 'monthly'
+    ? buildMonthlyCycles(args)
+    : buildHourlyCycles(args)
 }
 
 /**
@@ -437,17 +384,6 @@ export function getStudentLedger(
     credit,
     unbilled: getUnbilledSessions(student, sessions, settled),
   }
-}
-
-/** Convenience: what this student owes right now (0 when in credit). */
-export function getStudentBalance(
-  student: Student,
-  sessions: Session[],
-  payments: Payment[],
-  breaks: Break[] = [],
-  today: string = todayISO(),
-): number {
-  return getStudentLedger(student, sessions, payments, breaks, today).balance
 }
 
 /**

@@ -14,7 +14,7 @@ export function buildInvoiceHTML({
   sessionRows, fmt,
 }) {
   const duePositive = amountDueNow >= 0
-  const dueLabel    = duePositive ? 'Amount Due Now' : 'Credit Balance'
+  const dueLabel    = duePositive ? 'Amount Due Now' : 'Net Credit Balance'
   const dueColor    = duePositive ? '#fff'    : '#166534'
   const dueBg       = duePositive ? '#4f46e5' : '#dcfce7'
   const dueBorder   = duePositive ? 'none'    : '1px solid #bbf7d0'
@@ -118,10 +118,18 @@ export function buildInvoiceHTML({
     .badge { display: inline-block; padding: 2px 9px; border-radius: 100px; font-size: 10.5px; font-weight: 500; }
     .badge-regular { background: #e0e7ff; color: #3730a3; }
     .badge-extra   { background: #fef3c7; color: #92400e; }
-    tr.fee-row td {
+    table.items tbody tr.fee-row td {
       background: #eef2ff; color: #3730a3; font-size: 11.5px;
       border-top: 1px solid #c7d2fe; border-bottom: 1px solid #c7d2fe; padding: 5px 10px;
     }
+    table.items tbody tr.month-row td {
+      background: #4f46e5; color: #fff; font-size: 11.5px;
+      padding: 6px 10px;
+    }
+    table.items tbody tr.month-row td strong { color: #fff; }
+    table.items tbody tr.month-row td:first-child { border-radius: 7px 0 0 7px; }
+    table.items tbody tr.month-row td:last-child  { border-radius: 0 7px 7px 0; }
+    table.items tbody tr.month-row td:only-child  { border-radius: 7px; }
     .c { text-align: center; }
     .r { text-align: right; }
     .muted { color: #94a3b8; }
@@ -293,9 +301,9 @@ export function buildInvoiceHTML({
       <div class="summary-card">
         ${carryForward !== 0 ? `
         <div class="sum-row">
-          <span class="lbl">Carry-forward balance</span>
+          <span class="lbl">${carryForward >= 0 ? 'Carry Forward Balance' : 'Previous Balance Due'}</span>
           <span class="val" style="color:${carryForward >= 0 ? '#4f46e5' : '#dc2626'}">
-            ${carryForward >= 0 ? '+' : '&minus;'}&nbsp;${fmt(Math.abs(carryForward))}
+            ${fmt(Math.abs(carryForward))}
           </span>
         </div>` : ''}
         <div class="sum-row">

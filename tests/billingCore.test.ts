@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import {
   getBillingCycles, getStudentLedger, allocatePayments,
   normalizeBreaks, getRateAt, getEarningsForMonth, findCycleForDate, isOnBreak,
+  getUnbilledSessions,
 } from '@utils/billingCore'
 import { daysInclusive } from '@utils/date'
 import { student, session, payment, brk } from './factories'
@@ -547,5 +548,80 @@ describe('robustness', () => {
     const s = student({ billingAnchorDate: '2026-07-15', ratePerHour: 3333.33 })
     const ledger = getStudentLedger(s, [], [payment('2026-07-15', 1111.11)], [], '2026-08-01')
     expect(ledger.cycles[0].balance).toBe(2222.22)
+  })
+
+  it('does not pro-rate merely because today is mid-cycle', () => {
+    const plain = student({ billingAnchorDate: '2026-08-01' })
+    const cycles = getBillingCycles(plain, [], [], '2026-08-15')
+    expect(cycles[0].proRated).toBe(false)
+    expect(cycles[0].amount).toBe(5000)
+  })
+})
+
+// ───────────────────────────────────────────────────────────────────────────
+describe('unbilled sessions are surfaced, not swallowed', () => {
+  const s = student({ billingAnchorDate: '2026-07-15' })
+
+  it('reports a session logged before the anchor', () => {
+    const sessions = [
+      session('2026-07-02', { hours: 2 }),
+      session('2026-07-20', { hours: 1 }),
+    ]
+    const ledger = getStudentLedger(s, sessions, [], [], '2026-08-01')
+    expect(ledger.unbilled.map((x) => x.date)).toEqual(['2026-07-02'])
+  })
+
+  it('reports an out-of-range extra whose charge would otherwise vanish', () => {
+    const sessions = [session('2026-07-02', { type: 'extra', extraAmount: 900 })]
+    const ledger = getStudentLedger(s, sessions, [], [], '2026-08-01')
+    expect(ledger.unbilled).toHaveLength(1)
+    expect(ledger.unbilled[0].extraAmount).toBe(900)
+  })
+
+  it('reports sessions logged after the student left', () => {
+    const left = student({ billingAnchorDate: '2026-07-15', endDate: '2026-07-24' })
+    const ledger = getStudentLedger(left, [session('2026-08-05')], [], [], '2026-09-01')
+    expect(ledger.unbilled.map((x) => x.date)).toEqual(['2026-08-05'])
+  })
+
+  it('is empty when everything falls in a cycle', () => {
+    const sessions = [session('2026-07-20'), session('2026-08-20')]
+    expect(getStudentLedger(s, sessions, [], [], '2026-09-01').unbilled).toEqual([])
+  })
+
+  it('ignores other students sessions', () => {
+    const sessions = [session('2020-01-01', { studentId: 'other' })]
+    expect(getStudentLedger(s, sessions, [], [], '2026-08-01').unbilled).toEqual([])
+  })
+
+  it('counts a session as billed even when it sits in a break-extended stretch', () => {
+    const breaks = [brk('2026-07-20', '2026-07-30')]
+    const sessions = [session('2026-08-20')]   // inside the extended cycle 1
+    const ledger = getStudentLedger(s, sessions, [], breaks, '2026-09-01')
+    expect(ledger.unbilled).toEqual([])
+  })
+
+  it('exposes the same list through getUnbilledSessions', () => {
+    const sessions = [session('2026-07-02')]
+    const cycles = getBillingCycles(s, sessions, [], '2026-08-01')
+    expect(getUnbilledSessions(s, sessions, cycles)).toHaveLength(1)
+  })
+})
+
+// ───────────────────────────────────────────────────────────────────────────
+describe('negative amounts cannot inflate what is owed', () => {
+  it('ignores a negative payment instead of increasing the balance', () => {
+    const s = student({ billingAnchorDate: '2026-07-15' })
+    const ledger = getStudentLedger(s, [], [payment('2026-07-20', -3000)], [], '2026-08-01')
+    expect(ledger.totalPaid).toBe(0)
+    expect(ledger.balance).toBe(5000)   // was ₹8,000 before the guard
+  })
+
+  it('still counts the positive payments alongside it', () => {
+    const s = student({ billingAnchorDate: '2026-07-15' })
+    const pays = [payment('2026-07-20', -3000), payment('2026-07-21', 5000)]
+    const ledger = getStudentLedger(s, [], pays, [], '2026-08-01')
+    expect(ledger.totalPaid).toBe(5000)
+    expect(ledger.balance).toBe(0)
   })
 })

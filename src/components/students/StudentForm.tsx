@@ -75,7 +75,6 @@ export default function StudentForm({ student, onClose }: StudentFormProps) {
   )
 
   const rateChanged = isEdit && parseFloat(form.ratePerHour) !== student.ratePerHour
-  const typeChanged = isEdit && form.rateType !== (student.rateType ?? 'hourly')
 
   const today = todayISO()
   /** A year ahead is generous for onboarding; beyond that it's a typo. */
@@ -238,22 +237,31 @@ export default function StudentForm({ student, onClose }: StudentFormProps) {
       {/* Rate type toggle + rate + currency */}
       <div>
         <label className="label">Rate type *</label>
-        <div className="flex rounded-xl overflow-hidden border border-gray-200 mb-3">
-          {(['hourly', 'monthly'] as const).map((t) => (
-            <button
-              key={t}
-              type="button"
-              onClick={() => setForm({ ...form, rateType: t })}
-              className={`flex-1 py-2 text-sm font-medium transition-colors ${
-                form.rateType === t
-                  ? 'bg-primary-600 text-white'
-                  : 'bg-white text-gray-500 hover:bg-gray-50'
-              }`}
-            >
-              {t === 'hourly' ? 'Per Hour' : 'Per Month'}
-            </button>
-          ))}
-        </div>
+        {isEdit ? (
+          <div className="mb-3 rounded-xl border border-gray-200 bg-gray-50 px-3 py-2.5 text-sm text-gray-600">
+            {form.rateType === 'monthly' ? 'Per Month' : 'Per Hour'}
+            <span className="block text-xs text-gray-400 mt-0.5">
+              Fixed at signup — a student can't switch billing type later.
+            </span>
+          </div>
+        ) : (
+          <div className="flex rounded-xl overflow-hidden border border-gray-200 mb-3">
+            {(['hourly', 'monthly'] as const).map((t) => (
+              <button
+                key={t}
+                type="button"
+                onClick={() => setForm({ ...form, rateType: t })}
+                className={`flex-1 py-2 text-sm font-medium transition-colors ${
+                  form.rateType === t
+                    ? 'bg-primary-600 text-white'
+                    : 'bg-white text-gray-500 hover:bg-gray-50'
+                }`}
+              >
+                {t === 'hourly' ? 'Per Hour' : 'Per Month'}
+              </button>
+            ))}
+          </div>
+        )}
 
         <div className="grid grid-cols-2 gap-3">
           <div>
@@ -287,15 +295,11 @@ export default function StudentForm({ student, onClose }: StudentFormProps) {
 
         {rateError && <p className="text-xs text-red-500 mt-1">{rateError}</p>}
 
-        {(rateChanged || typeChanged) && (
+        {rateChanged && (
           <div className="mt-2 rounded-xl border border-indigo-200 bg-indigo-50 px-3 py-2">
             <p className="text-xs text-indigo-700">
-              {typeChanged
-                ? `Switching to ${form.rateType === 'monthly' ? 'monthly' : 'hourly'} takes effect today. ` +
-                  'The cycle in progress is pro-rated up to today, and everything before it keeps ' +
-                  'the price it was billed at.'
-                : 'The new rate applies from the next cycle onward. Cycles already billed keep ' +
-                  'the price they were charged at.'}
+              The new rate applies from the next cycle onward. Cycles already billed keep
+              the price they were charged at.
             </p>
           </div>
         )}

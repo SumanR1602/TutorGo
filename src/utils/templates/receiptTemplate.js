@@ -11,21 +11,24 @@ function escHtml(str) {
 
 export function buildReceiptHTML({
   recNo, teacherName, issued, student, isMonthly,
-  payment, periodLabel, sessionRows, sessionCount, totalHours,
-  carryForward, periodDue, creditBalance, creditHours, fmt,
+  payment, periodLabel, carryForward, periodDue, creditBalance, creditHours, fmt,
 }) {
   const balancePositive = creditBalance >= 0
-  const balanceLabel    = balancePositive ? 'Credit Balance' : 'Balance Due'
-  const balanceColor    = balancePositive ? '#16a34a' : '#dc2626'
-  const balanceBg       = balancePositive ? '#f0fdf4' : '#fef2f2'
-  const balanceBorder   = balancePositive ? '#bbf7d0' : '#fecaca'
+  const balanceIsZero   = creditBalance === 0
+  const balanceKind     = balanceIsZero ? 'settled' : (balancePositive ? 'credit' : 'due')
+  const balanceText     = balanceIsZero
+    ? 'Settled in full'
+    : (balancePositive ? `Net Credit Balance ${fmt(creditBalance)}` : `Balance Due ${fmt(Math.abs(creditBalance))}`)
+  const balanceColor    = balanceKind === 'due' ? '#dc2626' : (balanceKind === 'credit' ? '#4338ca' : '#15803d')
+  const balanceBg       = balanceKind === 'due' ? '#fef2f2' : (balanceKind === 'credit' ? '#eef2ff' : '#f0fdf4')
+
   const nameSlug        = student.name.split(' ').join('-')
   const safeTeacher     = escHtml(teacherName)
   const safeName        = escHtml(student.name)
   const safeCity        = escHtml(student.city ?? '')
   const safeRecNo       = escHtml(recNo)
   const safeIssued      = escHtml(issued)
-  const safePeriod      = escHtml(periodLabel)
+  const coverageLine    = periodLabel ? `Period: <strong>${escHtml(periodLabel)}</strong>` : 'Tutoring fees'
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -60,7 +63,7 @@ export function buildReceiptHTML({
     /* ── Card ─────────────────────────────────────────── */
     .page {
       position: relative; background: #fff;
-      max-width: 760px; margin: 0 auto;
+      max-width: 640px; margin: 0 auto;
       overflow: hidden;
       box-shadow: 0 4px 28px rgba(22,163,74,.13);
     }
@@ -70,7 +73,7 @@ export function buildReceiptHTML({
       position: absolute; top: 50%; left: 50%;
       transform: translate(-50%, -50%) rotate(-35deg);
       font-family: 'Inter', Arial, sans-serif;
-      font-size: 72px; font-weight: 700;
+      font-size: 60px; font-weight: 700;
       color: rgba(21,128,61,0.10); white-space: nowrap;
       letter-spacing: 10px; pointer-events: none; z-index: 2;
       user-select: none;
@@ -103,75 +106,42 @@ export function buildReceiptHTML({
       border-radius: 100px; padding: 2px 11px; font-size: 11.5px; font-weight: 500;
     }
 
-    /* ── Payment highlight ────────────────────────────── */
-    .payment-box {
-      margin: 14px 24px; padding: 14px 18px;
+    /* ── Amount panel — a real green "this succeeded" surface ── */
+    .amount-panel {
+      margin: 14px 24px 0; padding: 16px 20px;
       background: linear-gradient(135deg, #f0fdf4 0%, #dcfce7 100%);
       border: 1px solid #bbf7d0; border-radius: 12px;
-      display: flex; align-items: center; justify-content: space-between; gap: 12px;
     }
-    .pay-label { font-size: 9px; font-weight: 600; letter-spacing: 1.6px; text-transform: uppercase; color: #15803d; margin-bottom: 3px; }
-    .pay-amount { font-size: 28px; font-weight: 700; color: #15803d; letter-spacing: -.5px; }
-    .pay-date   { font-size: 11px; color: #64748b; margin-top: 2px; }
-    .pay-note   { font-size: 11px; color: #475569; margin-top: 2px; font-style: italic; }
-    .pay-badge  {
-      background: #16a34a; color: #fff;
-      border-radius: 100px; padding: 4px 14px;
-      font-size: 11px; font-weight: 600; white-space: nowrap;
+    .pay-label  { font-size: 9px; font-weight: 600; letter-spacing: 1.6px; text-transform: uppercase; color: #15803d; margin-bottom: 4px; }
+    .pay-amount { font-size: 30px; font-weight: 700; color: #15803d; letter-spacing: -.5px; }
+    .confirm-row { display: flex; align-items: center; gap: 6px; margin-top: 8px; font-size: 11.5px; }
+    .confirm-row .cf-text { color: #15803d; font-weight: 600; }
+    .confirm-row .cf-date { color: #4d7d68; }
+    .confirm-row .cf-date::before { content: "\\00b7"; margin-right: 7px; color: #86c9a6; }
+    .pay-note { font-size: 11px; color: #3f6b58; margin-top: 6px; font-style: italic; }
+
+    .coverage-line { margin: 10px 24px 0; font-size: 11.5px; color: #64748b; }
+    .coverage-line strong { color: #0f172a; font-weight: 600; }
+
+    /* ── Breakdown — the math, no itemized table ─────────── */
+    .breakdown { margin: 14px 24px 0; padding: 13px 0; border-top: 1px dashed #e2e8f0; border-bottom: 1px dashed #e2e8f0; }
+    .b-row { display: flex; justify-content: space-between; align-items: center; padding: 3px 0; font-size: 11.5px; color: #64748b; }
+    .b-row .amt { font-weight: 500; color: #334155; }
+    .b-row.highlight { font-weight: 700; color: #0f172a; margin-top: 3px; }
+    .b-row.highlight .amt { color: #0f172a; }
+
+    /* ── Balance pill ─────────────────────────────────── */
+    .balance-wrap { margin: 14px 24px 0; display: flex; justify-content: flex-end; }
+    .balance-pill {
+      font-size: 13px; font-weight: 700; padding: 7px 16px; border-radius: 8px;
     }
 
-    /* ── Table ────────────────────────────────────────── */
-    .tbl-wrap  { padding: 12px 24px 0; }
-    .tbl-label { font-size: 8px; font-weight: 600; letter-spacing: 1.8px; text-transform: uppercase; color: #94a3b8; margin-bottom: 7px; }
-
-    table.items { width: 100%; border-collapse: collapse; table-layout: fixed; }
-    table.items thead { display: table-header-group; }
-    table.items tfoot { display: table-footer-group; }
-    table.items thead th {
-      background: #15803d; color: rgba(255,255,255,.9);
-      padding: 6px 10px; font-size: 9px; font-weight: 600;
-      letter-spacing: .8px; text-transform: uppercase; text-align: left;
-    }
-    table.items thead th:first-child { border-radius: 7px 0 0 7px; }
-    table.items thead th:last-child  { border-radius: 0 7px 7px 0; }
-    table.items tbody tr:nth-child(even) { background: #f8fafc; }
-    table.items tbody td { padding: 5px 10px; font-size: 11.5px; color: #374151; border-bottom: 1px solid #f1f5f9; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    table.items tbody td.wrap { white-space: normal; word-break: break-word; }
-    table.items tbody tr:last-child td { border-bottom: none; }
-    table.items tfoot td {
-      border-top: 2px solid #e2e8f0; padding: 7px 10px;
-      font-size: 12px; font-weight: 600; color: #0f172a; background: #fff;
-    }
-    .badge { display: inline-block; padding: 2px 9px; border-radius: 100px; font-size: 10.5px; font-weight: 500; }
-    .badge-regular { background: #dcfce7; color: #15803d; }
-    .badge-extra   { background: #fef3c7; color: #92400e; }
-    .c { text-align: center; }
-    .r { text-align: right; }
-    .muted { color: #94a3b8; }
-    table.items th.r { text-align: right; }
-    table.items th.c { text-align: center; }
-
-    /* ── Financial summary ────────────────────────────── */
-    .summary-wrap { padding: 12px 24px 16px; display: flex; justify-content: flex-end; }
-    .summary-card { min-width: 300px; border: 1px solid #e2e8f0; border-radius: 12px; overflow: hidden; }
-    .sum-row {
-      display: flex; justify-content: space-between; align-items: center;
-      padding: 8px 16px; border-bottom: 1px solid #f1f5f9; font-size: 11.5px;
-    }
-    .sum-row:last-child { border-bottom: none; }
-    .sum-row .lbl { color: #64748b; }
-    .sum-row .val { font-weight: 600; color: #0f172a; }
-    .sum-row.total {
-      background: #f8fafc; border-top: 2px solid #e2e8f0;
-      font-size: 12px; padding: 10px 16px;
-    }
-    .balance-row {
-      display: flex; justify-content: space-between; align-items: center;
-      padding: 12px 16px; font-size: 13px; font-weight: 600;
-    }
+    .hrs-line { margin: 8px 24px 0; text-align: right; font-size: 10.5px; color: #94a3b8; }
+    .hrs-line strong { color: #64748b; font-weight: 600; }
 
     /* ── Footer ───────────────────────────────────────── */
     .rec-footer {
+      margin-top: 18px;
       padding: 10px 24px; border-top: 1px solid #e2e8f0; background: #f8fafc;
       display: flex; justify-content: space-between; align-items: flex-end;
     }
@@ -189,12 +159,9 @@ export function buildReceiptHTML({
       .page { box-shadow: none !important; overflow: visible !important; max-width: 100% !important; }
       .rec-header  { border-radius: 0 !important; }
       .meta-grid   { break-inside: avoid; }
-      .payment-box { break-inside: avoid; }
-      .summary-wrap { break-inside: avoid; }
+      .amount-panel { break-inside: avoid; }
+      .breakdown   { break-inside: avoid; }
       .rec-footer  { break-inside: avoid; }
-      table.items tbody tr { break-inside: avoid; }
-      table.items thead { display: table-header-group; }
-      table.items tfoot { display: table-footer-group; }
       @page { margin: 1.1cm 1.3cm; size: A4; }
     }
   </style>
@@ -215,7 +182,7 @@ export function buildReceiptHTML({
           a.href = url; a.download = document.title + '.pdf';
           document.body.appendChild(a); a.click(); document.body.removeChild(a);
           setTimeout(function() { URL.revokeObjectURL(url); }, 10000);
-          if (btn) { btn.disabled = false; btn.innerHTML = '\u2713 Downloaded'; }
+          if (btn) { btn.disabled = false; btn.innerHTML = '✓ Downloaded'; }
           return;
         }
       } catch (e) {}
@@ -289,74 +256,47 @@ export function buildReceiptHTML({
       </div>
     </div>
 
-    <!-- Payment highlight -->
-    <div class="payment-box">
-      <div>
-        <div class="pay-label">Amount Received</div>
-        <div class="pay-amount">${fmt(payment.amount)}</div>
-        <div class="pay-date">Paid on ${payment.date}</div>
-        ${payment.note ? `<div class="pay-note">"${payment.note}"</div>` : ''}
+    <!-- Amount — green, unmistakable, confirms this specific payment -->
+    <div class="amount-panel">
+      <div class="pay-label">Amount Received</div>
+      <div class="pay-amount">${fmt(payment.amount)}</div>
+      <div class="confirm-row">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#15803d" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+        <span class="cf-text">Payment Received</span>
+        <span class="cf-date">Paid ${escHtml(payment.date)}</span>
       </div>
-      <div class="pay-badge">✓ Payment Confirmed</div>
+      ${payment.note ? `<div class="pay-note">"${escHtml(payment.note)}"</div>` : ''}
     </div>
+    <div class="coverage-line">${coverageLine}</div>
 
-    <!-- Sessions table -->
-    <div class="tbl-wrap">
-      <div class="tbl-label">Sessions This Period &nbsp;<span style="font-weight:400;color:#94a3b8">(${safePeriod})</span></div>
-      <table class="items">
-        <thead>
-          <tr>
-            <th style="width:18%">Date</th>
-            <th style="width:20%">Type</th>
-            <th class="c" style="width:10%">Hrs</th>
-            <th class="r" style="width:26%">Rate</th>
-            <th class="r" style="width:26%">Cost</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${sessionRows || `<tr><td colspan="5" style="text-align:center;color:#94a3b8;padding:18px">No sessions in this period</td></tr>`}
-        </tbody>
-        <tfoot>
-          <tr>
-            <td colspan="3">${sessionCount} session${sessionCount !== 1 ? 's' : ''} · ${totalHours.toFixed(1)}h</td>
-            <td></td>
-            <td class="r">${fmt(periodDue)}</td>
-          </tr>
-        </tfoot>
-      </table>
-    </div>
-
-    <!-- Financial summary -->
-    <div class="summary-wrap">
-      <div class="summary-card">
-        ${carryForward !== 0 ? `
-        <div class="sum-row">
-          <span class="lbl">Carry-forward balance</span>
-          <span class="val" style="color:${carryForward >= 0 ? '#16a34a' : '#dc2626'}">
-            ${carryForward >= 0 ? '+' : '&minus;'}&nbsp;${fmt(Math.abs(carryForward))}
-          </span>
-        </div>` : ''}
-        <div class="sum-row">
-          <span class="lbl">Sessions this period</span>
-          <span class="val" style="color:#dc2626">&minus; ${fmt(periodDue)}</span>
-        </div>
-        <div class="sum-row total">
-          <span class="lbl">This payment received</span>
-          <span class="val" style="color:#16a34a">+ ${fmt(payment.amount)}</span>
-        </div>
-        <div class="balance-row" style="background:${balanceBg};border-top:2px solid ${balanceBorder}">
-          <span style="color:${balanceColor};font-size:12.5px">${balanceLabel}</span>
-          <span style="color:${balanceColor};font-size:18px;font-weight:700">${fmt(Math.abs(creditBalance))}</span>
-        </div>
-        ${!isMonthly && creditHours !== null ? `
-        <div style="text-align:center;padding:7px 16px;background:#f8fafc;font-size:11px;color:#64748b;border-top:1px solid #f1f5f9">
-          ${balancePositive
-            ? `≈ <strong style="color:${balanceColor}">${Math.abs(creditHours).toFixed(1)} hrs</strong> of sessions pre-paid`
-            : `<strong style="color:${balanceColor}">${Math.abs(creditHours).toFixed(1)} hrs</strong> of sessions not yet paid`
-          }
-        </div>` : ''}
+    <!-- Breakdown — no itemized sessions, just the math behind the balance -->
+    <div class="breakdown">
+      ${carryForward !== 0 ? `
+      <div class="b-row">
+        <span>${carryForward >= 0 ? 'Carry Forward Balance' : 'Previous Balance Due'}</span>
+        <span class="amt">${fmt(Math.abs(carryForward))}</span>
+      </div>` : ''}
+      <div class="b-row">
+        <span>Sessions this period</span>
+        <span class="amt">${fmt(periodDue)}</span>
+      </div>
+      <div class="b-row highlight">
+        <span>This payment</span>
+        <span class="amt">${fmt(payment.amount)}</span>
       </div>
     </div>
+
+    <!-- Resulting balance -->
+    <div class="balance-wrap">
+      <span class="balance-pill" style="color:${balanceColor};background:${balanceBg}">${balanceText}</span>
+    </div>
+    ${!isMonthly && creditHours !== null && !balanceIsZero ? `
+    <div class="hrs-line">
+      ${balancePositive
+        ? `&asymp; <strong>${Math.abs(creditHours).toFixed(1)} hrs</strong> of sessions pre-paid`
+        : `<strong>${Math.abs(creditHours).toFixed(1)} hrs</strong> of sessions not yet paid`
+      }
+    </div>` : ''}
 
     <!-- Footer -->
     <div class="rec-footer">

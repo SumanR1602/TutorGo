@@ -83,15 +83,6 @@ export interface Settings {
 
 // ─── Billing types ────────────────────────────────────────────────────────────
 
-export interface MonthlyBreakdown {
-  key: string    // "YYYY-MM"
-  month: string  // "May 2026"
-  hours: number
-  amount: number
-  paid: number
-  balance: number
-}
-
 /**
  * One billing period. For monthly students this is an anchored cycle
  * (15 Jul → 14 Aug), extended by any breaks inside it. For hourly students
@@ -128,13 +119,6 @@ export interface BillingCycle {
   started: boolean
   /** True when the student left mid-cycle and this cycle was pro-rated. */
   proRated: boolean
-}
-
-/** A stretch of time billed under one rate type. */
-export interface RateSegment {
-  start: string
-  end: string
-  rateType: RateType
 }
 
 /** Everything the UI needs for one student, computed in a single pass. */

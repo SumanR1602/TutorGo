@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import type { Student, Session, Payment, Break, Settings, StudentLedger } from '@/types'
-import { STORE_NAME, DEFAULT_RATE_TYPE, DEFAULT_CURRENCY } from '@constants'
+import { STORE_NAME, DEFAULT_CURRENCY } from '@constants'
 import { getStudentLedger } from '@utils/billingCore'
 import { migrateStudent, migrateStudents } from '@utils/migrate'
 import { todayISO } from '@utils/date'
