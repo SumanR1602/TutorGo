@@ -1,4 +1,4 @@
-﻿/**
+/**
  * billingInvoiceTemplate.js
  * Pure function — takes pre-computed invoice data, returns an HTML string.
  */
